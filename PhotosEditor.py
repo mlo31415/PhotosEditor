@@ -211,6 +211,15 @@ class PhotosEditor:
         self._thumb_cells:       list       = []   # ordered cell widgets
         self._thumb_img_labels:  dict       = {}   # image_id → tk.Label showing the thumbnail
 
+        # ── target album state (Photo Move Mode) ────────────────────────────
+        self.target_album_id:   int | None = None
+        self.target_album_name: str        = ""
+        self._target_album_images: list[dict] = []
+        self._target_thumb_cache:  dict       = {}
+        self._target_thumb_tk:     dict       = {}
+        self._target_thumb_cells:  list       = []
+        self._mode: str = 'editor'   # 'editor' | 'move'
+
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
         self._viewer_tk:           ImageTk.PhotoImage | None = None
@@ -229,12 +238,14 @@ class PhotosEditor:
         self._field_validity = {'date': False, 'caption': False, 'filename': False}
 
         # ── tk variables ────────────────────────────────────────────────────
-        self.status_var      = tk.StringVar(value="Ready")
-        self.album_var       = tk.StringVar(value="(none)")
-        self.photo_label_var = tk.StringVar(value="No photo selected")
-        self.photo_dim_var   = tk.StringVar(value="")
-        self.url_var         = tk.StringVar(value="")
-        self.thumb_count_var = tk.StringVar(value="")
+        self.status_var           = tk.StringVar(value="Ready")
+        self.album_var            = tk.StringVar(value="(none)")
+        self.target_album_var     = tk.StringVar(value="(none)")
+        self.photo_label_var      = tk.StringVar(value="No photo selected")
+        self.photo_dim_var        = tk.StringVar(value="")
+        self.url_var              = tk.StringVar(value="")
+        self.thumb_count_var      = tk.StringVar(value="")
+        self.target_thumb_count_var = tk.StringVar(value="")
         self.custom_vars:    dict = {}
 
         self._build_ui()
@@ -254,12 +265,9 @@ class PhotosEditor:
         toolbar = ttk.Frame(self.root, padding=(4, 2))
         toolbar.pack(side="top", fill="x")
 
-        ttk.Button(toolbar, text="Select Album",
-                   command=self._pick_album).pack(side="left", padx=2)
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Label(toolbar, text="Album:").pack(side="left")
-        ttk.Label(toolbar, textvariable=self.album_var,
-                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
+        self._mode_btn = ttk.Button(toolbar, text="Switch to Photo Move Mode",
+                                    command=self._toggle_mode)
+        self._mode_btn.pack(side="left", padx=2)
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
 
@@ -267,10 +275,15 @@ class PhotosEditor:
         self._main_pane = ttk.PanedWindow(self.root, orient="horizontal")
         self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
 
-        left_frame  = self._build_thumb_panel(self._main_pane)
-        right_frame = self._build_editor_panel(self._main_pane)
-        self._main_pane.add(left_frame,  weight=2)
-        self._main_pane.add(right_frame, weight=3)
+        left_frame = self._build_thumb_panel(self._main_pane)
+        self._main_pane.add(left_frame, weight=2)
+
+        right_container = ttk.Frame(self._main_pane)
+        self._main_pane.add(right_container, weight=3)
+
+        self._editor_frame = self._build_editor_panel(right_container)
+        self._target_frame = self._build_target_panel(right_container)
+        self._editor_frame.pack(fill="both", expand=True)
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -284,8 +297,13 @@ class PhotosEditor:
 
         top = ttk.Frame(frame)
         top.pack(fill="x", pady=(0, 4))
+        ttk.Button(top, text="Select Album",
+                   command=self._pick_album).pack(side="left", padx=(0, 6))
+        ttk.Label(top, text="Album:").pack(side="left")
+        ttk.Label(top, textvariable=self.album_var,
+                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
         ttk.Label(top, textvariable=self.thumb_count_var,
-                  foreground="gray").pack(side="left", padx=4)
+                  foreground="gray").pack(side="right", padx=4)
 
         container = ttk.Frame(frame)
         container.pack(fill="both", expand=True)
@@ -487,6 +505,40 @@ class PhotosEditor:
         self.root.after(100, self._set_initial_sash_positions)
         return frame
 
+    # ── right panel: target album (Photo Move Mode) ──────────────────────────
+    def _build_target_panel(self, parent) -> ttk.Frame:
+        frame = ttk.LabelFrame(parent, text="Target Album", padding=4)
+
+        top = ttk.Frame(frame)
+        top.pack(fill="x", pady=(0, 4))
+        ttk.Button(top, text="Select Album",
+                   command=self._pick_target_album).pack(side="left", padx=(0, 6))
+        ttk.Label(top, text="Album:").pack(side="left")
+        ttk.Label(top, textvariable=self.target_album_var,
+                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
+        ttk.Label(top, textvariable=self.target_thumb_count_var,
+                  foreground="gray").pack(side="right", padx=4)
+
+        container = ttk.Frame(frame)
+        container.pack(fill="both", expand=True)
+
+        self._target_thumb_canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
+        vscroll = ttk.Scrollbar(container, orient="vertical",
+                                command=self._target_thumb_canvas.yview)
+        self._target_thumb_canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side="right", fill="y")
+        self._target_thumb_canvas.pack(side="left", fill="both", expand=True)
+
+        self._target_grid_frame = tk.Frame(self._target_thumb_canvas, bg="#2a2a2a")
+        self._target_grid_win = self._target_thumb_canvas.create_window(
+            0, 0, anchor="nw", window=self._target_grid_frame)
+
+        self._target_grid_frame.bind("<Configure>",   self._on_target_grid_resize)
+        self._target_thumb_canvas.bind("<Configure>", self._on_target_canvas_resize)
+        self._target_thumb_canvas.bind("<MouseWheel>", self._on_target_mousewheel)
+
+        return frame
+
     # -----------------------------------------------------------------------
     # State / geometry
     # -----------------------------------------------------------------------
@@ -506,6 +558,12 @@ class PhotosEditor:
             self.current_album_id   = album_id
             self.current_album_name = album_name
             self.album_var.set(album_name or "(none)")
+        target_id   = self._state.get("target_album_id",   None)
+        target_name = self._state.get("target_album_name", "")
+        if target_id is not None:
+            self.target_album_id   = target_id
+            self.target_album_name = target_name
+            self.target_album_var.set(target_name or "(none)")
 
     def _set_main_sash(self, pos: int):
         try:
@@ -532,8 +590,23 @@ class PhotosEditor:
         if self.current_album_id is not None:
             state["album_id"]   = self.current_album_id
             state["album_name"] = self.current_album_name
+        if self.target_album_id is not None:
+            state["target_album_id"]   = self.target_album_id
+            state["target_album_name"] = self.target_album_name
         _save_state(state)
         self.root.destroy()
+
+    def _toggle_mode(self):
+        if self._mode == 'editor':
+            self._mode = 'move'
+            self._editor_frame.pack_forget()
+            self._target_frame.pack(fill="both", expand=True)
+            self._mode_btn.config(text="Switch to Photo Editor Mode")
+        else:
+            self._mode = 'editor'
+            self._target_frame.pack_forget()
+            self._editor_frame.pack(fill="both", expand=True)
+            self._mode_btn.config(text="Switch to Photo Move Mode")
 
     # -----------------------------------------------------------------------
     # Status
@@ -561,6 +634,23 @@ class PhotosEditor:
         self.album_var.set(fullname)
         self.set_status(f"Album selected: {fullname}")
         self._load_album_photos()
+
+    def _pick_target_album(self):
+        try:
+            DownloadAlbumStructure.pick_album(
+                self.root, self.set_status, self._on_target_album_selected,
+                title="Select Target Album")
+        except FileNotFoundError as e:
+            messagebox.showerror("Params file missing", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _on_target_album_selected(self, album_id: int, fullname: str):
+        self.target_album_id   = album_id
+        self.target_album_name = fullname
+        self.target_album_var.set(fullname)
+        self.set_status(f"Target album selected: {fullname}")
+        self._load_target_album_photos()
 
     # -----------------------------------------------------------------------
     # Load & display thumbnails
@@ -775,6 +865,185 @@ class PhotosEditor:
 
     def _on_mousewheel(self, event):
         self._thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    # -----------------------------------------------------------------------
+    # Target album thumbnail loading
+    # -----------------------------------------------------------------------
+    def _load_target_album_photos(self):
+        if self.target_album_id is None:
+            return
+        self._clear_target_thumbnails()
+        self.target_thumb_count_var.set("")
+        self.set_status(f"Fetching photos from \"{self.target_album_name}\"…")
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Downloading Photos")
+        dlg.resizable(False, False)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        dlg_alive = [True]
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
+
+        ttk.Label(dlg, text="Downloading thumbnails from:",
+                  padding=(16, 12, 16, 2)).pack()
+        ttk.Label(dlg, text=self.target_album_name,
+                  font=("TkDefaultFont", 9, "bold"),
+                  padding=(16, 0, 16, 8)).pack()
+        pbar = ttk.Progressbar(dlg, mode="indeterminate", length=360)
+        pbar.pack(padx=16, pady=(0, 4))
+        pbar.start(12)
+        count_var = tk.StringVar(value="Connecting…")
+        ttk.Label(dlg, textvariable=count_var, foreground="gray",
+                  padding=(16, 0, 16, 12)).pack()
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx + (rw - dw) // 2}+{ry + (rh - dh) // 2}")
+
+        def _on_total(n):
+            def _apply():
+                if not dlg_alive[0]: return
+                pbar.stop()
+                pbar.configure(mode="determinate", maximum=max(n, 1))
+                count_var.set(f"0 / {n}")
+            self.root.after(0, _apply)
+
+        def _on_progress(done, total):
+            def _apply():
+                if not dlg_alive[0]: return
+                pbar["value"] = done
+                count_var.set(f"{done} / {total}")
+            self.root.after(0, _apply)
+
+        def _on_done():
+            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+
+        threading.Thread(
+            target=self._worker_fetch_target_photos,
+            args=(_on_total, _on_progress, _on_done),
+            daemon=True).start()
+
+    def _worker_fetch_target_photos(self, on_total, on_progress, on_done):
+        try:
+            params = DownloadAlbumStructure.load_params()
+            client = DownloadAlbumStructure.PiwigoClient(
+                params["url"], params["username"], params["password"],
+                verify_ssl=params.get("verify_ssl", True),
+                rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+            client.login(params["username"], params["password"])
+            images = client.get_album_images(self.target_album_id)
+            client.logout()
+            self._target_album_images = images
+            n = len(images)
+            self.root.after(0, lambda: self.target_thumb_count_var.set(
+                f"{n} photo{'s' if n != 1 else ''}"))
+            on_total(n)
+            verify = params.get("verify_ssl", True)
+            for idx, img_dict in enumerate(images):
+                self._worker_download_target_thumb(img_dict, verify)
+                on_progress(idx + 1, n)
+            on_done()
+            self.root.after(0, lambda: self.set_status(
+                f"Loaded {n} photo{'s' if n != 1 else ''} from \"{self.target_album_name}\""))
+        except Exception as e:
+            logger.exception("Error fetching target photos")
+            on_done()
+            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+
+    def _worker_download_target_thumb(self, img_dict: dict, verify: bool):
+        if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
+            return
+        image_id = img_dict.get("id")
+        url = _pick_derivative_url(
+            img_dict, ("thumb", "square", "small", "2small", "xsmall", "medium", "large"))
+        if not url:
+            url = img_dict.get("element_url", "")
+        if not url:
+            return
+        try:
+            import warnings
+            with warnings.catch_warnings():
+                if not verify:
+                    warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+                resp = requests.get(url, verify=verify, timeout=15)
+                resp.raise_for_status()
+            pil = Image.open(BytesIO(resp.content))
+            pil.load()
+            if pil.mode not in ("RGB", "RGBA"):
+                pil = pil.convert("RGB")
+            pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
+            self._target_thumb_cache[image_id] = pil
+            self.root.after(0, lambda iid=image_id, d=img_dict:
+                            self._add_target_thumb_cell(iid, d))
+        except Exception as e:
+            logger.warning(f"Target thumbnail {image_id}: {e}")
+
+    def _add_target_thumb_cell(self, image_id: int, img_dict: dict):
+        pil = self._target_thumb_cache.get(image_id)
+        if pil is None:
+            return
+        tk_img = ImageTk.PhotoImage(pil)
+        self._target_thumb_tk[image_id] = tk_img
+
+        name = img_dict.get("name") or img_dict.get("file") or f"#{image_id}"
+        cell = tk.Frame(self._target_grid_frame, bg="#3a3a3a", relief="flat",
+                        padx=2, pady=2, cursor="hand2")
+        img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
+        img_lbl.pack()
+        name_lbl = tk.Label(cell, text=_truncate(name, 20),
+                            bg="#3a3a3a", fg="#dddddd",
+                            font=("TkDefaultFont", 8), anchor="center",
+                            wraplength=self._thumb_size[0])
+        name_lbl.pack(fill="x")
+
+        def _tip_text(d=img_dict):
+            parts = []
+            fname = d.get("file", "").strip()
+            if fname: parts.append(fname)
+            caption = d.get("comment", "").strip()
+            if caption: parts.append(f"Caption: {caption}")
+            return "\n".join(parts)
+
+        tip = _Tooltip(_tip_text)
+        for w in (cell, img_lbl, name_lbl):
+            w.bind("<Enter>", lambda e, c=cell: c.configure(bg="#5a5a5a", relief="raised"))
+            w.bind("<Leave>", lambda e, c=cell: c.configure(bg="#3a3a3a", relief="flat"))
+            tip.attach(w)
+
+        self._target_thumb_cells.append(cell)
+        self._reflow_target_grid()
+
+    def _clear_target_thumbnails(self):
+        for cell in self._target_thumb_cells:
+            cell.destroy()
+        self._target_thumb_cells.clear()
+        self._target_thumb_cache.clear()
+        self._target_thumb_tk.clear()
+        self._target_album_images.clear()
+
+    def _reflow_target_grid(self):
+        if not self._target_thumb_cells:
+            return
+        canvas_w = self._target_thumb_canvas.winfo_width()
+        if canvas_w < 10:
+            canvas_w = self._thumb_size[0] + 20
+        cols = max(1, canvas_w // (self._thumb_size[0] + 16))
+        for idx, cell in enumerate(self._target_thumb_cells):
+            r, c = divmod(idx, cols)
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
+
+    def _on_target_grid_resize(self, _event=None):
+        self._target_thumb_canvas.configure(
+            scrollregion=self._target_thumb_canvas.bbox("all"))
+
+    def _on_target_canvas_resize(self, event):
+        self._target_thumb_canvas.itemconfigure(self._target_grid_win, width=event.width)
+        self._reflow_target_grid()
+
+    def _on_target_mousewheel(self, event):
+        self._target_thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     # -----------------------------------------------------------------------
     # Thumbnail click → load photo in editor
