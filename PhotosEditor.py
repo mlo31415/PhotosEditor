@@ -214,7 +214,11 @@ class PhotosEditor:
         self._viewer_image:        Image.Image | None = None
         self._viewer_tk:           ImageTk.PhotoImage | None = None
         self._current_image_dict:  dict | None = None
-        self._caption_editor_open: bool = False
+        self._caption_editor_open: bool  = False
+        self._crop_start:          tuple | None = None
+        self._crop_rect_id:        int   | None = None
+        self._photo_display_rect:  tuple | None = None  # (x0,y0,x1,y1) on canvas
+        self._edit_history:        list        = []     # stack of PIL Images for undo
 
         # ── custom-fields state (mirrors PhotosUploader) ────────────────────
         self.custom_data:    dict = {}   # image_id → {field: value}
@@ -341,8 +345,12 @@ class PhotosEditor:
         self.canvas = tk.Canvas(right_col, bg="#1a1a1a", cursor="crosshair",
                                 height=200)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self._on_canvas_resize)
+        self.canvas.bind("<Configure>",       self._on_canvas_resize)
         self.canvas.bind("<Control-Button-1>", self._open_caption_editor)
+        self.canvas.bind("<Button-1>",         self._on_crop_start)
+        self.canvas.bind("<B1-Motion>",        self._on_crop_drag)
+        self.canvas.bind("<ButtonRelease-1>",  self._on_crop_release)
+        self.canvas.bind("<Escape>",           self._clear_crop_rect)
 
         btn_row = ttk.Frame(right_col)
         btn_row.pack(pady=(4, 0))
@@ -446,11 +454,14 @@ class PhotosEditor:
                    command=lambda: self._rotate_photo(180), state="disabled")
         self.rotate_180_btn.pack(side="left", padx=2)
 
-        # Row 2 – Crop
+        # Row 2 – Crop / Undo
         row2 = ttk.Frame(tools_frame)
         row2.pack(fill="x", pady=(0, 4))
-        ttk.Button(row2, text="Crop",
-                   command=self._crop_photo).pack(side="left", padx=2)
+        self.crop_btn = ttk.Button(row2, text="Crop", command=self._crop_photo)
+        self.crop_btn.pack(side="left", padx=2)
+        self.undo_btn = ttk.Button(row2, text="Undo", command=self._undo_edit,
+                                   state="disabled")
+        self.undo_btn.pack(side="left", padx=2)
 
         # Row 3 – Color adjustment
         row3 = ttk.Frame(tools_frame)
@@ -525,7 +536,8 @@ class PhotosEditor:
     def _pick_album(self):
         try:
             DownloadAlbumStructure.pick_album(
-                self.root, self.set_status, self._on_album_selected)
+                self.root, self.set_status, self._on_album_selected,
+                title="Select Album to Edit")
         except FileNotFoundError as e:
             messagebox.showerror("Params file missing", str(e))
         except Exception as e:
@@ -798,6 +810,8 @@ class PhotosEditor:
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
         self._current_image_dict = img_dict
+        self._edit_history.clear()
+        self._clear_crop_rect()
         self.photo_label_var.set(name)
         self.photo_dim_var.set(
             f"{pil.width} \u00d7 {pil.height} px  |  {pil.mode}")
@@ -831,18 +845,120 @@ class PhotosEditor:
         """Rotate the viewer image clockwise by degrees (90, -90, or 180)."""
         if self._viewer_image is None:
             return
+        self._edit_history.append(self._viewer_image.copy())
+        self.undo_btn.config(state="normal")
         img = self._viewer_image
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
         # PIL rotates counter-clockwise, so negate for clockwise behaviour
         self._viewer_image = img.rotate(-degrees, expand=True)
+        self._clear_crop_rect()
         self._display_photo()
         direction = "right" if degrees == 90 else ("left" if degrees == -90 else "180°")
         self.set_status(f"Rotated {direction}")
 
+    def _undo_edit(self):
+        """Revert the last rotate or crop operation."""
+        if not self._edit_history:
+            return
+        self._viewer_image = self._edit_history.pop()
+        self._clear_crop_rect()
+        self._display_photo()
+        if not self._edit_history:
+            self.undo_btn.config(state="disabled")
+        self.set_status("Undo applied.")
+
+    def _on_crop_start(self, event):
+        """Begin a crop drag — only if the click lands within the photo bounds."""
+        r = self._photo_display_rect
+        if r is None:
+            self._crop_start = None
+            return
+        px0, py0, px1, py1 = r
+        if event.x < px0 or event.x > px1 or event.y < py0 or event.y > py1:
+            self._crop_start = None
+            return
+        self._clear_crop_rect()
+        self._crop_start = (event.x, event.y)
+
+    def _on_crop_drag(self, event):
+        if self._crop_start is None:
+            return
+        r = self._photo_display_rect
+        if r is None:
+            return
+        px0, py0, px1, py1 = r
+        cx = max(px0, min(event.x, px1))
+        cy = max(py0, min(event.y, py1))
+        if self._crop_rect_id is not None:
+            self.canvas.delete(self._crop_rect_id)
+        sx, sy = self._crop_start
+        self._crop_rect_id = self.canvas.create_rectangle(
+            sx, sy, cx, cy, outline="red", width=2)
+
+    def _on_crop_release(self, event):
+        if self._crop_start is None:
+            return
+        r = self._photo_display_rect
+        if r is None:
+            return
+        px0, py0, px1, py1 = r
+        cx = max(px0, min(event.x, px1))
+        cy = max(py0, min(event.y, py1))
+        sx, sy = self._crop_start
+        self._crop_start = None
+        # Discard tiny drag (< 4 px in either axis)
+        if abs(cx - sx) < 4 or abs(cy - sy) < 4:
+            self._clear_crop_rect()
+            return
+        # Redraw the final, normalised rectangle
+        if self._crop_rect_id is not None:
+            self.canvas.delete(self._crop_rect_id)
+        self._crop_rect_id = self.canvas.create_rectangle(
+            min(sx, cx), min(sy, cy), max(sx, cx), max(sy, cy),
+            outline="red", width=2)
+        self.set_status("Crop region selected — click Crop to apply, Esc to cancel.")
+
+    def _clear_crop_rect(self, _event=None):
+        """Delete the on-canvas crop rectangle and reset drag state."""
+        if self._crop_rect_id is not None:
+            self.canvas.delete(self._crop_rect_id)
+            self._crop_rect_id = None
+        self._crop_start = None
+
     def _crop_photo(self):
-        """Crop the current photo (not yet implemented)."""
-        self.set_status("Crop: not yet implemented.")
+        """Apply the current crop rectangle to the viewer image."""
+        if self._viewer_image is None:
+            self.set_status("No photo loaded.")
+            return
+        if self._crop_rect_id is None:
+            self.set_status("Drag on the photo to select a crop region first.")
+            return
+        r = self._photo_display_rect
+        if r is None:
+            return
+        coords = self.canvas.coords(self._crop_rect_id)
+        if not coords or len(coords) < 4:
+            return
+        cx0, cy0, cx1, cy1 = [int(v) for v in coords]
+        cx0, cx1 = min(cx0, cx1), max(cx0, cx1)
+        cy0, cy1 = min(cy0, cy1), max(cy0, cy1)
+        px0, py0, px1, py1 = r
+        pw, ph = px1 - px0, py1 - py0
+        iw, ih = self._viewer_image.size
+        ix0 = max(0, int((cx0 - px0) / pw * iw))
+        iy0 = max(0, int((cy0 - py0) / ph * ih))
+        ix1 = min(iw, int((cx1 - px0) / pw * iw))
+        iy1 = min(ih, int((cy1 - py0) / ph * ih))
+        if ix1 <= ix0 or iy1 <= iy0:
+            self.set_status("Crop region too small.")
+            return
+        self._edit_history.append(self._viewer_image.copy())
+        self.undo_btn.config(state="normal")
+        self._viewer_image = self._viewer_image.crop((ix0, iy0, ix1, iy1))
+        self._clear_crop_rect()
+        self._display_photo()
+        self.set_status(f"Cropped to {ix1 - ix0}\u00d7{iy1 - iy0} px")
 
     def _on_color_adjust(self, _value=None):
         """Color saturation/brightness adjustment (not yet implemented)."""
@@ -870,6 +986,9 @@ class PhotosEditor:
             thumb = self._viewer_image.resize((tw, th), Image.Resampling.LANCZOS)
             self._viewer_tk = ImageTk.PhotoImage(thumb)
             self.canvas.delete("all")
+            ix = cw // 2 - tw // 2
+            iy = ch // 2 - th // 2
+            self._photo_display_rect = (ix, iy, ix + tw, iy + th)
             self.canvas.create_image(cw // 2, ch // 2,
                                      anchor="center", image=self._viewer_tk)
         except Exception as e:
@@ -1087,6 +1206,9 @@ class PhotosEditor:
         self.rotate_right_btn.config(state="disabled")
         self.rotate_left_btn.config(state="disabled")
         self.rotate_180_btn.config(state="disabled")
+        self.undo_btn.config(state="disabled")
+        self._edit_history.clear()
+        self._clear_crop_rect()
         for widget in self.custom_vars.values():
             if isinstance(widget, tk.Text):
                 widget.delete('1.0', "end")
