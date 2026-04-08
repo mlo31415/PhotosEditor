@@ -260,6 +260,8 @@ class PhotosEditor:
         ttk.Label(toolbar, text="Album:").pack(side="left")
         ttk.Label(toolbar, textvariable=self.album_var,
                   foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
+        ttk.Button(toolbar, text="Exit",
+                   command=self._on_close).pack(side="right", padx=2)
 
         # ── main pane ─────────────────────────────────────────────────────────
         self._main_pane = ttk.PanedWindow(self.root, orient="horizontal")
