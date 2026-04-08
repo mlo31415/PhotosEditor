@@ -209,6 +209,7 @@ class PhotosEditor:
         self._thumb_cache:       dict       = {}   # image_id → PIL Image
         self._thumb_tk:          dict       = {}   # image_id → PhotoImage (GC anchor)
         self._thumb_cells:       list       = []   # ordered cell widgets
+        self._thumb_img_labels:  dict       = {}   # image_id → tk.Label showing the thumbnail
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -703,6 +704,7 @@ class PhotosEditor:
                         padx=2, pady=2, cursor="hand2")
         img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
         img_lbl.pack()
+        self._thumb_img_labels[image_id] = img_lbl
         name_lbl = tk.Label(cell, text=_truncate(name, 20),
                             bg="#3a3a3a", fg="#dddddd",
                             font=("TkDefaultFont", 8), anchor="center",
@@ -736,6 +738,7 @@ class PhotosEditor:
         self._thumb_cells.clear()
         self._thumb_cache.clear()
         self._thumb_tk.clear()
+        self._thumb_img_labels.clear()
         self._album_images.clear()
 
     # -----------------------------------------------------------------------
@@ -830,7 +833,27 @@ class PhotosEditor:
 
     def _upload_current_photo(self):
         """Upload the current photo back to Piwigo (not yet implemented)."""
+        self._refresh_current_thumbnail()
         self.set_status("Upload to Piwigo: not yet implemented.")
+
+    def _refresh_current_thumbnail(self):
+        """Regenerate the left-pane thumbnail from the current editor image."""
+        if self._viewer_image is None or self._current_image_dict is None:
+            return
+        image_id = self._current_image_dict.get("id")
+        if image_id is None:
+            return
+        img_lbl = self._thumb_img_labels.get(image_id)
+        if img_lbl is None:
+            return
+        pil = self._viewer_image.copy()
+        if pil.mode not in ("RGB", "RGBA"):
+            pil = pil.convert("RGB")
+        pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
+        self._thumb_cache[image_id] = pil
+        tk_img = ImageTk.PhotoImage(pil)
+        self._thumb_tk[image_id] = tk_img   # keep reference to prevent GC
+        img_lbl.configure(image=tk_img)
 
     def _revert_photo(self):
         """Reload the current photo from Piwigo, discarding unsaved edits."""
