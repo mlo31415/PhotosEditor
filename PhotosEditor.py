@@ -71,7 +71,7 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff',
                     '.tif', '.webp', '.heic', '.heif'}
 
 CUSTOM_FIELDS = [
-    ('output_filename', 'Output Filename'),
+    ('output_filename', 'Filename'),
     ('photo_source',    'Photographer/Source'),
     ('date_of_photo',   'Date of Photo'),
     ('comments',        'Caption'),
@@ -409,8 +409,17 @@ class PhotosEditor:
                     entry = tk.Entry(custom_frame, textvariable=var, width=40)
                     self.date_entry = entry
                 elif key == 'output_filename':
-                    entry = tk.Entry(custom_frame, textvariable=var, width=40)
+                    entry = tk.Entry(custom_frame, textvariable=var, width=40,
+                                     state="readonly",
+                                     readonlybackground=self.root.cget("background"),
+                                     relief="flat", cursor="arrow")
                     self.output_filename_entry = entry
+                    def _show_filename_menu(event, _entry=entry):
+                        menu = tk.Menu(_entry, tearoff=0)
+                        menu.add_command(label="Copy to Caption",
+                                         command=self._copy_filename_to_caption)
+                        menu.tk_popup(event.x_root, event.y_root)
+                    entry.bind("<Button-3>", _show_filename_menu)
                 else:
                     entry = ttk.Entry(custom_frame, textvariable=var, width=40)
                 entry.grid(row=row, column=2, sticky="ew", pady=2)
@@ -1203,6 +1212,18 @@ class PhotosEditor:
                         self._current_image_dict.get("name") or "")
         self.custom_vars['output_filename'].set(saved_fn or "")
 
+    def _copy_filename_to_caption(self):
+        filename = self.custom_vars['output_filename'].get().strip()
+        if not filename:
+            return
+        caption_widget = self.custom_vars['comments']
+        existing = caption_widget.get('1.0', 'end').rstrip('\n')
+        if existing:
+            caption_widget.insert('end', '\n' + filename)
+        else:
+            caption_widget.insert('end', filename)
+        caption_widget.edit_modified(True)
+
     def _save_current_custom_fields(self):
         if self._current_image_dict is None:
             return
@@ -1256,7 +1277,6 @@ class PhotosEditor:
             and ('.' + ext) in IMAGE_EXTENSIONS
         )
         self._field_validity['filename'] = valid
-        self.output_filename_entry.config(bg='pink' if not valid else 'white')
 
     def _validate_caption_field(self):
         widget = self.custom_vars['comments']
