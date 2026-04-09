@@ -271,6 +271,7 @@ class PhotosEditor:
         self._validate_output_filename_field()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<F5>", self._on_f5_refresh)
 
         # Refresh album hierarchy from Piwigo on every startup
         self.root.after(200, self._refresh_hierarchy_on_startup)
@@ -380,6 +381,7 @@ class PhotosEditor:
             0, 0, anchor="nw", window=self._grid_frame)
 
         self._grid_frame.bind("<Configure>",    self._on_grid_resize)
+        self._grid_frame.bind("<MouseWheel>",   self._on_mousewheel)
         self._thumb_canvas.bind("<Configure>",  self._on_thumb_canvas_resize)
         self._thumb_canvas.bind("<MouseWheel>", self._on_mousewheel)
         # Drops from right grid onto left grid
@@ -640,6 +642,7 @@ class PhotosEditor:
             0, 0, anchor="nw", window=self._target_grid_frame)
 
         self._target_grid_frame.bind("<Configure>",    self._on_target_grid_resize)
+        self._target_grid_frame.bind("<MouseWheel>",   self._on_target_mousewheel)
         self._target_thumb_canvas.bind("<Configure>",  self._on_target_canvas_resize)
         self._target_thumb_canvas.bind("<MouseWheel>", self._on_target_mousewheel)
         # Drops from left grid onto right grid
@@ -722,6 +725,13 @@ class PhotosEditor:
             self._target_frame.pack_forget()
             self._editor_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Move Mode")
+
+    def _on_f5_refresh(self, _event=None):
+        if self._mode != 'move':
+            return
+        self._load_album_photos()
+        if self.target_album_id is not None:
+            self._load_target_album_photos()
 
     # -----------------------------------------------------------------------
     # Status
@@ -1113,6 +1123,7 @@ class PhotosEditor:
             w.bind("<Enter>",           lambda e, iid=image_id, c=cell: self._on_source_enter(iid, c))
             w.bind("<Leave>",           lambda e, iid=image_id, c=cell: self._on_source_leave(iid, c))
             w.bind("<Button-3>",        _show_left_menu)
+            w.bind("<MouseWheel>",      self._on_mousewheel)
             tip.attach(w)
 
         self._thumb_cells.append(cell)
@@ -1310,6 +1321,7 @@ class PhotosEditor:
             w.bind("<Enter>",           lambda e, c=cell, iid=image_id: self._on_target_enter(iid, c))
             w.bind("<Leave>",           lambda e, c=cell, iid=image_id: self._on_target_leave(iid, c))
             w.bind("<Button-3>",        _show_right_menu)
+            w.bind("<MouseWheel>",      self._on_target_mousewheel)
             tip.attach(w)
 
         self._target_thumb_cells.append(cell)
