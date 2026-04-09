@@ -219,6 +219,10 @@ class PhotosEditor:
         self._target_thumb_tk:     dict       = {}
         self._target_thumb_cells:  list       = []
         self._mode: str = 'editor'   # 'editor' | 'move'
+        self._tree_all_items:       list = []
+        self._tree_fullname_by_iid: dict = {}
+        self._source_tree_all_items:       list = []
+        self._source_tree_fullname_by_iid: dict = {}
 
         # ── drag-and-drop / selection state ─────────────────────────────────
         self._drag_batch:      list        = []     # list of img_dict being dragged
@@ -307,36 +311,76 @@ class PhotosEditor:
 
     # ── left panel: thumbnail browser ───────────────────────────────────────
     def _build_thumb_panel(self, parent) -> ttk.Frame:
-        frame = ttk.LabelFrame(parent, text="Album Photos", padding=4)
+        frame = ttk.Frame(parent)
         self._thumb_panel_frame = frame
 
-        top = ttk.Frame(frame)
+        # ── Horizontal pane: album tree (left) | thumbnail grid (right) ──────
+        hpane = ttk.PanedWindow(frame, orient="horizontal")
+        hpane.pack(fill="both", expand=True)
+        self._source_hpane = hpane
+
+        # ── Left: album hierarchy tree ────────────────────────────────────────
+        tree_outer = ttk.LabelFrame(hpane, text="Album Hierarchy", padding=4)
+        hpane.add(tree_outer, weight=2)
+
+        filter_frame = ttk.Frame(tree_outer)
+        filter_frame.pack(fill="x", pady=(0, 4))
+        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
+        self._source_filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self._source_filter_var).pack(
+            side="left", fill="x", expand=True)
+
+        tree_frame = ttk.Frame(tree_outer)
+        tree_frame.pack(fill="both", expand=True)
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
+        self._source_hierarchy_tree = ttk.Treeview(
+            tree_frame, selectmode="browse", show="tree",
+            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        yscroll.config(command=self._source_hierarchy_tree.yview)
+        xscroll.config(command=self._source_hierarchy_tree.xview)
+        yscroll.pack(side="right", fill="y")
+        xscroll.pack(side="bottom", fill="x")
+        self._source_hierarchy_tree.pack(side="left", fill="both", expand=True)
+        self._source_hierarchy_tree.column("#0", minwidth=200)
+
+        self._source_filter_var.trace_add("write", self._on_source_tree_filter)
+        self._source_hierarchy_tree.bind("<<TreeviewSelect>>", self._on_source_hierarchy_select)
+        self._source_hierarchy_tree.bind("<Double-1>",         self._on_source_hierarchy_select)
+
+        # ── Right: source album thumbnail grid ────────────────────────────────
+        thumb_outer = ttk.LabelFrame(hpane, text="Album Photos", padding=4)
+        hpane.add(thumb_outer, weight=3)
+        self._thumb_grid_frame_label = thumb_outer  # for retitling in move mode
+
+        top = ttk.Frame(thumb_outer)
         top.pack(fill="x", pady=(0, 4))
-        ttk.Button(top, text="Select Album",
-                   command=self._pick_album).pack(side="left", padx=(0, 6))
         ttk.Label(top, text="Album:").pack(side="left")
         ttk.Label(top, textvariable=self.album_var,
                   foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
         ttk.Label(top, textvariable=self.thumb_count_var,
                   foreground="gray").pack(side="right", padx=4)
 
-        container = ttk.Frame(frame)
+        container = ttk.Frame(thumb_outer)
         container.pack(fill="both", expand=True)
 
         self._thumb_canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
-        vscroll = ttk.Scrollbar(container, orient="vertical",
-                                command=self._thumb_canvas.yview)
-        self._thumb_canvas.configure(yscrollcommand=vscroll.set)
-        vscroll.pack(side="right", fill="y")
+        vscroll2 = ttk.Scrollbar(container, orient="vertical",
+                                 command=self._thumb_canvas.yview)
+        self._thumb_canvas.configure(yscrollcommand=vscroll2.set)
+        vscroll2.pack(side="right", fill="y")
         self._thumb_canvas.pack(side="left", fill="both", expand=True)
 
         self._grid_frame = tk.Frame(self._thumb_canvas, bg="#2a2a2a")
         self._grid_win = self._thumb_canvas.create_window(
             0, 0, anchor="nw", window=self._grid_frame)
 
-        self._grid_frame.bind("<Configure>",  self._on_grid_resize)
-        self._thumb_canvas.bind("<Configure>", self._on_thumb_canvas_resize)
+        self._grid_frame.bind("<Configure>",   self._on_grid_resize)
+        self._thumb_canvas.bind("<Configure>",  self._on_thumb_canvas_resize)
         self._thumb_canvas.bind("<MouseWheel>", self._on_mousewheel)
+
+        # Populate tree once the widget is mapped
+        frame.bind("<Map>", lambda e: self.root.after(50, self._populate_source_hierarchy_tree), add="+")
 
         return frame
 
@@ -522,12 +566,48 @@ class PhotosEditor:
 
     # ── right panel: target album (Photo Move Mode) ──────────────────────────
     def _build_target_panel(self, parent) -> ttk.Frame:
-        frame = ttk.LabelFrame(parent, text="Target Album", padding=4)
+        frame = ttk.Frame(parent)
 
-        top = ttk.Frame(frame)
+        # ── Horizontal pane: album tree (left) | thumbnail grid (right) ──────
+        hpane = ttk.PanedWindow(frame, orient="horizontal")
+        hpane.pack(fill="both", expand=True)
+        self._target_hpane = hpane
+
+        # ── Left: album hierarchy tree ────────────────────────────────────────
+        tree_outer = ttk.LabelFrame(hpane, text="Album Hierarchy", padding=4)
+        hpane.add(tree_outer, weight=2)
+
+        filter_frame = ttk.Frame(tree_outer)
+        filter_frame.pack(fill="x", pady=(0, 4))
+        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
+        self._tree_filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self._tree_filter_var).pack(
+            side="left", fill="x", expand=True)
+
+        tree_frame = ttk.Frame(tree_outer)
+        tree_frame.pack(fill="both", expand=True)
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
+        self._hierarchy_tree = ttk.Treeview(
+            tree_frame, selectmode="browse", show="tree",
+            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        yscroll.config(command=self._hierarchy_tree.yview)
+        xscroll.config(command=self._hierarchy_tree.xview)
+        yscroll.pack(side="right", fill="y")
+        xscroll.pack(side="bottom", fill="x")
+        self._hierarchy_tree.pack(side="left", fill="both", expand=True)
+        self._hierarchy_tree.column("#0", minwidth=200)
+
+        self._tree_filter_var.trace_add("write", self._on_tree_filter)
+        self._hierarchy_tree.bind("<<TreeviewSelect>>", self._on_hierarchy_select)
+        self._hierarchy_tree.bind("<Double-1>",         self._on_hierarchy_select)
+
+        # ── Right: target album thumbnail grid ───────────────────────────────
+        thumb_outer = ttk.LabelFrame(hpane, text="Target Album", padding=4)
+        hpane.add(thumb_outer, weight=3)
+
+        top = ttk.Frame(thumb_outer)
         top.pack(fill="x", pady=(0, 4))
-        ttk.Button(top, text="Select Album",
-                   command=self._pick_target_album).pack(side="left", padx=(0, 6))
         ttk.Label(top, text="Album:").pack(side="left")
         ttk.Label(top, textvariable=self.target_album_var,
                   foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
@@ -540,7 +620,7 @@ class PhotosEditor:
         ttk.Label(top, textvariable=self.target_thumb_count_var,
                   foreground="gray").pack(side="right", padx=4)
 
-        container = ttk.Frame(frame)
+        container = ttk.Frame(thumb_outer)
         container.pack(fill="both", expand=True)
 
         self._target_thumb_canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
@@ -554,9 +634,12 @@ class PhotosEditor:
         self._target_grid_win = self._target_thumb_canvas.create_window(
             0, 0, anchor="nw", window=self._target_grid_frame)
 
-        self._target_grid_frame.bind("<Configure>",   self._on_target_grid_resize)
-        self._target_thumb_canvas.bind("<Configure>", self._on_target_canvas_resize)
+        self._target_grid_frame.bind("<Configure>",    self._on_target_grid_resize)
+        self._target_thumb_canvas.bind("<Configure>",  self._on_target_canvas_resize)
         self._target_thumb_canvas.bind("<MouseWheel>", self._on_target_mousewheel)
+
+        # Populate tree once the widget is mapped
+        frame.bind("<Map>", lambda e: self.root.after(50, self._populate_hierarchy_tree), add="+")
 
         return frame
 
@@ -626,13 +709,13 @@ class PhotosEditor:
             self._editor_frame.pack_forget()
             self._target_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Editor Mode")
-            self._thumb_panel_frame.config(text="Source Album")
+            self._thumb_grid_frame_label.config(text="Source Album")
         else:
             self._mode = 'editor'
             self._target_frame.pack_forget()
             self._editor_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Move Mode")
-            self._thumb_panel_frame.config(text="Album Photos")
+            self._thumb_grid_frame_label.config(text="Album Photos")
 
     # -----------------------------------------------------------------------
     # Status
@@ -663,6 +746,8 @@ class PhotosEditor:
                 client.logout()
                 self.root.after(0, lambda: self.set_status(
                     f"Album hierarchy refreshed ({n} albums)."))
+                self.root.after(0, self._populate_source_hierarchy_tree)
+                self.root.after(0, self._populate_hierarchy_tree)
             except Exception as e:
                 logger.warning(f"Could not refresh album hierarchy: {e}")
                 self.root.after(0, lambda: self.set_status(
@@ -689,6 +774,135 @@ class PhotosEditor:
         self.album_var.set(fullname)
         self.set_status(f"Album selected: {fullname}")
         self._load_album_photos()
+
+    # -----------------------------------------------------------------------
+    # Album hierarchy tree (embedded in target panel)
+    # -----------------------------------------------------------------------
+    def _populate_source_hierarchy_tree(self):
+        """Load AlbumHierarchy.json into the source (left) embedded tree."""
+        try:
+            hier_file = DownloadAlbumStructure._album_hierarchy_file()
+            if not hier_file.exists():
+                return
+            with open(hier_file, encoding="utf-8") as f:
+                hierarchy = json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load hierarchy for source tree: {e}")
+            return
+
+        tree = self._source_hierarchy_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        self._source_tree_all_items = []
+        self._source_tree_fullname_by_iid = {}
+
+        def _populate(parent_iid, nodes, top_level=False):
+            for node in nodes:
+                iid   = str(node["id"])
+                count = node.get("total_nb_images", 0)
+                text  = f"{node['name']}  ({count:,})"
+                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
+                fullname = node.get("fullname", node["name"])
+                self._source_tree_all_items.append((iid, node["name"].lower(), fullname))
+                self._source_tree_fullname_by_iid[iid] = fullname
+                if node.get("children"):
+                    _populate(iid, node["children"])
+
+        _populate("", hierarchy, top_level=True)
+
+        # Re-select current source album if one is set
+        if self.current_album_id is not None:
+            iid = str(self.current_album_id)
+            if tree.exists(iid):
+                tree.selection_set(iid)
+                tree.see(iid)
+
+    def _on_source_tree_filter(self, *_):
+        q = self._source_filter_var.get().strip().lower()
+        tree = self._source_hierarchy_tree
+        if not q:
+            tree.selection_remove(tree.selection())
+            return
+        for iid, name_lower, _ in self._source_tree_all_items:
+            if q in name_lower:
+                tree.selection_set(iid)
+                tree.see(iid)
+                return
+        tree.selection_remove(tree.selection())
+
+    def _on_source_hierarchy_select(self, _event=None):
+        sel = self._source_hierarchy_tree.selection()
+        if not sel:
+            return
+        iid      = sel[0]
+        album_id = int(iid)
+        fullname = self._source_tree_fullname_by_iid.get(iid, "")
+        if album_id != self.current_album_id:
+            self._on_album_selected(album_id, fullname)
+
+    def _populate_hierarchy_tree(self):
+        """Load AlbumHierarchy.json into the embedded tree (non-blocking)."""
+        try:
+            hier_file = DownloadAlbumStructure._album_hierarchy_file()
+            if not hier_file.exists():
+                return
+            with open(hier_file, encoding="utf-8") as f:
+                hierarchy = json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load hierarchy for tree: {e}")
+            return
+
+        tree = self._hierarchy_tree
+        # Clear existing items
+        for item in tree.get_children():
+            tree.delete(item)
+        self._tree_all_items = []   # (iid, name_lower, fullname)
+        self._tree_fullname_by_iid = {}
+
+        def _populate(parent_iid, nodes, top_level=False):
+            for node in nodes:
+                iid   = str(node["id"])
+                count = node.get("total_nb_images", 0)
+                text  = f"{node['name']}  ({count:,})"
+                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
+                fullname = node.get("fullname", node["name"])
+                self._tree_all_items.append((iid, node["name"].lower(), fullname))
+                self._tree_fullname_by_iid[iid] = fullname
+                if node.get("children"):
+                    _populate(iid, node["children"])
+
+        _populate("", hierarchy, top_level=True)
+
+        # Re-select current target album if one is set
+        if self.target_album_id is not None:
+            iid = str(self.target_album_id)
+            if tree.exists(iid):
+                tree.selection_set(iid)
+                tree.see(iid)
+
+    def _on_tree_filter(self, *_):
+        q = self._tree_filter_var.get().strip().lower()
+        tree = self._hierarchy_tree
+        if not q:
+            tree.selection_remove(tree.selection())
+            return
+        for iid, name_lower, _ in self._tree_all_items:
+            if q in name_lower:
+                tree.selection_set(iid)
+                tree.see(iid)
+                return
+        tree.selection_remove(tree.selection())
+
+    def _on_hierarchy_select(self, _event=None):
+        sel = self._hierarchy_tree.selection()
+        if not sel:
+            return
+        iid      = sel[0]
+        album_id = int(iid)
+        fullname = self._tree_fullname_by_iid.get(iid, "")
+        # Only reload if a different album was chosen
+        if album_id != self.target_album_id:
+            self._on_target_album_selected(album_id, fullname)
 
     def _pick_target_album(self):
         try:
