@@ -347,6 +347,10 @@ class PhotosEditor:
         self._source_filter_var.trace_add("write", self._on_source_tree_filter)
         self._source_hierarchy_tree.bind("<<TreeviewSelect>>", self._on_source_hierarchy_select)
         self._source_hierarchy_tree.bind("<Double-1>",         self._on_source_hierarchy_select)
+        self._source_hierarchy_tree.bind(
+            "<MouseWheel>",
+            lambda e: self._source_hierarchy_tree.yview_scroll(
+                -1 * (e.delta // 120), "units"))
 
         # ── Right: source album thumbnail grid ────────────────────────────────
         thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
@@ -604,6 +608,10 @@ class PhotosEditor:
         self._tree_filter_var.trace_add("write", self._on_tree_filter)
         self._hierarchy_tree.bind("<<TreeviewSelect>>", self._on_hierarchy_select)
         self._hierarchy_tree.bind("<Double-1>",         self._on_hierarchy_select)
+        self._hierarchy_tree.bind(
+            "<MouseWheel>",
+            lambda e: self._hierarchy_tree.yview_scroll(
+                -1 * (e.delta // 120), "units"))
 
         # ── Right: target album thumbnail grid ───────────────────────────────
         thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
