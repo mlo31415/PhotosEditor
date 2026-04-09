@@ -224,6 +224,7 @@ class PhotosEditor:
         self._drag_batch:      list        = []     # list of img_dict being dragged
         self._drag_is_copy:    bool        = False
         self._drag_window:     tk.Toplevel | None = None  # floating preview
+        self._press_pos:       tuple | None = None  # (x_root, y_root) of ButtonPress
         self._selected_ids:    set         = set()  # selected source image ids
         self._cell_by_id:      dict        = {}     # image_id → cell widget
         # pending operations: list of {'img_dict': ..., 'op': 'move'|'copy'}
@@ -266,6 +267,9 @@ class PhotosEditor:
         self._validate_output_filename_field()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Refresh album hierarchy from Piwigo on every startup
+        self.root.after(200, self._refresh_hierarchy_on_startup)
 
     # -----------------------------------------------------------------------
     # UI construction
@@ -638,6 +642,35 @@ class PhotosEditor:
         self.root.update_idletasks()
 
     # -----------------------------------------------------------------------
+    # Startup album hierarchy refresh
+    # -----------------------------------------------------------------------
+    def _refresh_hierarchy_on_startup(self):
+        """Fetch the album list from Piwigo and save AlbumHierarchy.json.
+        Runs in a background thread; status bar shows progress."""
+        self.set_status("Refreshing album hierarchy…")
+
+        def worker():
+            try:
+                params = DownloadAlbumStructure.load_params()
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get(
+                        "rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                n = DownloadAlbumStructure._fetch_and_save_hierarchy(
+                    client, lambda msg: self.root.after(0, lambda m=msg: self.set_status(m)))
+                client.logout()
+                self.root.after(0, lambda: self.set_status(
+                    f"Album hierarchy refreshed ({n} albums)."))
+            except Exception as e:
+                logger.warning(f"Could not refresh album hierarchy: {e}")
+                self.root.after(0, lambda: self.set_status(
+                    f"Hierarchy refresh failed: {e}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # -----------------------------------------------------------------------
     # Album selection
     # -----------------------------------------------------------------------
     def _pick_album(self):
@@ -848,10 +881,9 @@ class PhotosEditor:
 
         tip = _Tooltip(_tip_text)
         for w in (cell, img_lbl, name_lbl):
-            w.bind("<Button-1>",        lambda e, d=img_dict, c=cell: self._on_source_click(e, d, c))
-            w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_drag_start(e, d, c))
-            w.bind("<B1-Motion>",       lambda e: self._on_drag_motion(e))
-            w.bind("<ButtonRelease-1>", lambda e: self._on_drag_release(e))
+            w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_source_press(e, d, c))
+            w.bind("<B1-Motion>",       lambda e, d=img_dict, c=cell: self._on_source_motion(e, d, c))
+            w.bind("<ButtonRelease-1>", lambda e, d=img_dict, c=cell: self._on_source_release(e, d, c))
             w.bind("<Enter>",           lambda e, iid=image_id, c=cell: self._on_source_enter(iid, c))
             w.bind("<Leave>",           lambda e, iid=image_id, c=cell: self._on_source_leave(iid, c))
             tip.attach(w)
@@ -1119,13 +1151,44 @@ class PhotosEditor:
         self._target_thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     # -----------------------------------------------------------------------
-    # Source thumbnail click / hover / selection
+    # Source thumbnail press / motion / release  (click + drag unified)
     # -----------------------------------------------------------------------
-    def _on_source_click(self, event, img_dict: dict, cell: tk.Frame):
-        if self._mode == 'move':
-            self._toggle_selection(img_dict.get("id"), cell)
+    _DRAG_THRESHOLD = 5   # pixels of movement before a press becomes a drag
+
+    def _on_source_press(self, event, img_dict: dict, cell: tk.Frame):
+        self._press_pos = (event.x_root, event.y_root)
+        self._drag_batch = []   # reset; drag only starts on sufficient motion
+
+    def _on_source_motion(self, event, img_dict: dict, cell: tk.Frame):
+        if self._mode != 'move' or self._press_pos is None:
+            return
+        dx = abs(event.x_root - self._press_pos[0])
+        dy = abs(event.y_root - self._press_pos[1])
+        if dx < self._DRAG_THRESHOLD and dy < self._DRAG_THRESHOLD:
+            return
+        # Threshold crossed — initiate drag (only once)
+        if self._drag_window is None and not self._drag_batch:
+            self._on_drag_start(event, img_dict)
+
+        if self._drag_window:
+            self._drag_window.wm_geometry(
+                f"+{event.x_root + 10}+{event.y_root + 10}")
+
+    def _on_source_release(self, event, img_dict: dict, cell: tk.Frame):
+        was_drag = self._drag_window is not None or bool(self._drag_batch)
+        if self._drag_window is not None:
+            self._drag_window.destroy()
+            self._drag_window = None
+        self._press_pos = None
+
+        if was_drag:
+            self._on_drag_release(event)
         else:
-            self._on_thumb_click(img_dict)
+            # It was a plain click
+            if self._mode == 'move':
+                self._toggle_selection(img_dict.get("id"), cell)
+            else:
+                self._on_thumb_click(img_dict)
 
     def _toggle_selection(self, image_id, cell: tk.Frame):
         if image_id in self._selected_ids:
@@ -1167,13 +1230,10 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Drag-and-drop  (source → target, move mode only)
     # -----------------------------------------------------------------------
-    def _on_drag_start(self, event, img_dict: dict, cell: tk.Frame):
-        if self._mode != 'move':
-            return
+    def _on_drag_start(self, event, img_dict: dict):
         self._drag_is_copy = bool(event.state & 0x0004)
-        # If the dragged cell is in the selection, drag all selected;
-        # otherwise drag only this one (without changing the selection).
         image_id = img_dict.get("id")
+        # If dragged cell is selected, drag the whole selection; else just this one
         if image_id in self._selected_ids:
             self._drag_batch = [
                 d for d in self._album_images
@@ -1194,28 +1254,19 @@ class PhotosEditor:
         win.wm_overrideredirect(True)
         win.attributes("-alpha", 0.75)
         win.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
-        lbl = tk.Label(win, image=self._drag_tk_ref if self._drag_tk_ref else None,
-                       text="" if self._drag_tk_ref else "\u2b06",
-                       bg="#add8e6", relief="solid", borderwidth=1)
-        lbl.pack()
+        tk.Label(win, image=self._drag_tk_ref if self._drag_tk_ref else None,
+                 text="" if self._drag_tk_ref else "\u2b06",
+                 bg="#add8e6", relief="solid", borderwidth=1).pack()
         n = len(self._drag_batch)
-        label_text = ("COPY" if self._drag_is_copy else "MOVE")
+        label_text = "COPY" if self._drag_is_copy else "MOVE"
         if n > 1:
-            label_text += f"  ×{n}"
+            label_text += f"  \u00d7{n}"
         tk.Label(win, text=label_text, bg="#add8e6",
                  font=("TkDefaultFont", 8, "bold")).pack()
         self._drag_window = win
 
-    def _on_drag_motion(self, event):
-        if self._drag_window is None:
-            return
-        self._drag_window.wm_geometry(
-            f"+{event.x_root + 10}+{event.y_root + 10}")
-
     def _on_drag_release(self, event):
-        if self._drag_window is not None:
-            self._drag_window.destroy()
-            self._drag_window = None
+        # Note: _drag_window is already destroyed by _on_source_release
         if not self._drag_batch or self._mode != 'move':
             self._drag_batch = []
             return
@@ -1231,13 +1282,23 @@ class PhotosEditor:
             return
 
         op = 'copy' if self._drag_is_copy else 'move'
+
+        # Build a set of filenames already in the target album
+        target_filenames = {
+            (d.get("file") or d.get("name") or "").lower()
+            for d in self._target_album_images
+        }
+
         already_queued = []
+        already_in_target = []
         queued_now = []
         for img_dict in self._drag_batch:
             image_id = img_dict.get("id")
+            name = img_dict.get("file") or img_dict.get("name") or str(image_id)
             if image_id in self._pending_image_ids:
-                name = img_dict.get("file") or img_dict.get("name") or str(image_id)
                 already_queued.append(name)
+            elif name.lower() in target_filenames:
+                already_in_target.append(name)
             else:
                 self._pending_ops.append({'img_dict': img_dict, 'op': op})
                 self._pending_image_ids.add(image_id)
@@ -1245,6 +1306,11 @@ class PhotosEditor:
                 queued_now.append(img_dict)
 
         self._drag_batch = []
+        if already_in_target:
+            self._show_over_target(
+                "Already in Target Album",
+                f"{len(already_in_target)} photo(s) already exist in the target "
+                f"album and were skipped:\n\n  " + "\n  ".join(already_in_target))
         if already_queued:
             messagebox.showwarning(
                 "Already Queued",
@@ -1501,14 +1567,20 @@ class PhotosEditor:
                     self.set_status(
                         f"Upload Changes complete: "
                         f"{len(copies)} copied, {len(moves)} moved.")
-                # Clear the pending queue and the pending cells from target grid
+                # Clear successfully processed items from the pending queue
+                error_names = {e.split(':')[0] for e in errors}
                 completed_ids = {p['img_dict'].get('id')
                                   for p in pending_ops_snapshot
-                                  if p['img_dict'].get('id') not in
-                                  {e.split(':')[0] for e in errors}}
+                                  if (p['img_dict'].get('file') or
+                                      p['img_dict'].get('name') or
+                                      str(p['img_dict'].get('id'))) not in error_names}
                 self._pending_ops = [p for p in self._pending_ops
                                       if p['img_dict'].get('id') not in completed_ids]
                 self._pending_image_ids -= completed_ids
+                # Reload target album to replace tinted pending cells with
+                # normal thumbnails reflecting the current server state
+                if self.target_album_id is not None:
+                    self._load_target_album_photos()
             self.root.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
