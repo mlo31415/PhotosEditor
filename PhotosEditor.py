@@ -37,6 +37,14 @@ except ImportError:
     REQUESTS_AVAILABLE = False
     print("WARNING: requests not installed.  Run: pip install requests")
 
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    print("WARNING: opencv-python not installed.  Run: pip install opencv-python")
+
 # ---------------------------------------------------------------------------
 # Locate and import the shared DownloadAlbumStructure module
 # ---------------------------------------------------------------------------
@@ -86,6 +94,40 @@ STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _opencv_restore(pil_img: "Image.Image",
+                    exposure: float, contrast: float,
+                    red_cast: float, sharpen: float) -> "Image.Image":
+    """Apply fading/redness/blur corrections using OpenCV.
+    All parameters are on a −100…+100 (or 0…100) scale.
+    Returns a new PIL Image."""
+    img = np.array(pil_img.convert("RGB"), dtype=np.float32)
+
+    # 1. Red-cast removal ────────────────────────────────────────────────────
+    if red_cast > 0:
+        t = red_cast / 100.0
+        img[:, :, 0] = np.clip(img[:, :, 0] * (1.0 - t * 0.50), 0, 255)  # R ↓
+        img[:, :, 1] = np.clip(img[:, :, 1] * (1.0 + t * 0.10), 0, 255)  # G ↑ slight
+        img[:, :, 2] = np.clip(img[:, :, 2] * (1.0 + t * 0.40), 0, 255)  # B ↑
+
+    # 2. Exposure + Contrast ─────────────────────────────────────────────────
+    #    alpha: 0.5 … 2.5   beta: −100 … +100
+    alpha = 1.0 + contrast / 100.0 * 1.5
+    beta  = exposure
+    if alpha != 1.0 or beta != 0.0:
+        img = np.clip(img * alpha + beta, 0, 255)
+
+    # 3. Sharpening (unsharp mask) ────────────────────────────────────────────
+    if sharpen > 0 and CV2_AVAILABLE:
+        t      = sharpen / 100.0
+        sigma  = 1.0 + t * 2.0    # blur radius 1 → 3
+        amount = t * 1.5           # blend weight 0 → 1.5
+        u8     = img.astype(np.uint8)
+        blurred = cv2.GaussianBlur(u8, (0, 0), sigma)
+        img = cv2.addWeighted(u8, 1.0 + amount, blurred, -amount, 0).astype(np.float32)
+
+    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
+
+
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
 
@@ -263,6 +305,15 @@ class PhotosEditor:
         self.thumb_count_var      = tk.StringVar(value="")
         self.target_thumb_count_var = tk.StringVar(value="")
         self.custom_vars:    dict = {}
+
+        # ── photo restoration state ─────────────────────────────────────────
+        self._restoration_base:    Image.Image | None = None
+        self._restore_after_id:    str | None         = None
+        self._restore_generation:  int                = 0
+        self._restore_exposure_var = tk.DoubleVar(value=0.0)
+        self._restore_contrast_var = tk.DoubleVar(value=0.0)
+        self._restore_red_var      = tk.DoubleVar(value=0.0)
+        self._restore_sharpen_var  = tk.DoubleVar(value=0.0)
 
         self._build_ui()
         self._restore_state()
@@ -563,16 +614,43 @@ class PhotosEditor:
                                    state="disabled")
         self.undo_btn.pack(side="left", padx=2)
 
-        # Row 3 – Color adjustment
-        row3 = ttk.Frame(tools_frame)
-        row3.pack(fill="x")
-        ttk.Label(row3, text="Adjust color:").pack(side="left", padx=(0, 6))
-        self.color_adjust_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(row3, from_=0.0, to=2.0, orient="horizontal",
-                  variable=self.color_adjust_var,
-                  command=self._on_color_adjust).pack(side="left", fill="x", expand=True)
-
         self.root.after(100, self._set_initial_sash_positions)
+
+        # ── Photo Restoration ─────────────────────────────────────────────────
+        restore_frame = ttk.LabelFrame(lower_frame, text="Photo Restoration", padding=6)
+        restore_frame.pack(fill="x", pady=(4, 0))
+
+        _restore_sliders = [
+            ("Exposure",  self._restore_exposure_var, -100, 100),
+            ("Contrast",  self._restore_contrast_var, -100, 100),
+            ("Red cast",  self._restore_red_var,         0, 100),
+            ("Sharpen",   self._restore_sharpen_var,     0, 100),
+        ]
+        self._restore_val_vars = {}
+        for label, dvar, lo, hi in _restore_sliders:
+            row = ttk.Frame(restore_frame)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=f"{label}:", width=10, anchor="e").pack(
+                side="left", padx=(0, 4))
+            val_var = tk.StringVar(value="0")
+            self._restore_val_vars[label] = val_var
+            ttk.Label(row, textvariable=val_var, width=5,
+                      anchor="e").pack(side="right")
+            def _cmd(v, vv=val_var, dv=dvar):
+                vv.set(str(int(float(v))))
+                self._on_restoration_change()
+            ttk.Scale(row, from_=lo, to=hi, orient="horizontal",
+                      variable=dvar, command=_cmd).pack(
+                          side="left", fill="x", expand=True)
+
+        btn_row = ttk.Frame(restore_frame)
+        btn_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(btn_row,
+                  text="(requires opencv-python)" if not CV2_AVAILABLE else "",
+                  foreground="red").pack(side="left")
+        ttk.Button(btn_row, text="Revert Restoration",
+                   command=self._reset_restoration).pack(side="right")
+
         return frame
 
     # ── right panel: target album (Photo Move Mode) ──────────────────────────
@@ -1953,6 +2031,7 @@ class PhotosEditor:
         self._viewer_image       = pil
         self._current_image_dict = img_dict
         self._edit_history.clear()
+        self._set_restoration_base()
         self._clear_crop_rect()
         self.photo_label_var.set(name)
         self.photo_dim_var.set(
@@ -2014,6 +2093,7 @@ class PhotosEditor:
             img = img.convert("RGB")
         # PIL rotates counter-clockwise, so negate for clockwise behaviour
         self._viewer_image = img.rotate(-degrees, expand=True)
+        self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
         direction = "right" if degrees == 90 else ("left" if degrees == -90 else "180°")
@@ -2024,6 +2104,7 @@ class PhotosEditor:
         if not self._edit_history:
             return
         self._viewer_image = self._edit_history.pop()
+        self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
         if not self._edit_history:
@@ -2118,14 +2199,80 @@ class PhotosEditor:
         self._edit_history.append(self._viewer_image.copy())
         self.undo_btn.config(state="normal")
         self._viewer_image = self._viewer_image.crop((ix0, iy0, ix1, iy1))
+        self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
         self.set_status(f"Cropped to {ix1 - ix0}\u00d7{iy1 - iy0} px")
 
-    def _on_color_adjust(self, _value=None):
-        """Color saturation/brightness adjustment (not yet implemented)."""
-        val = round(self.color_adjust_var.get(), 2)
-        self.set_status(f"Color adjust: {val:.2f}  (not yet implemented)")
+    # -----------------------------------------------------------------------
+    # Photo restoration  (OpenCV)
+    # -----------------------------------------------------------------------
+    def _on_restoration_change(self, *_):
+        """Debounce: wait 120 ms after last slider move before processing."""
+        if self._restore_after_id is not None:
+            self.root.after_cancel(self._restore_after_id)
+        self._restore_after_id = self.root.after(120, self._apply_restoration_bg)
+
+    def _apply_restoration_bg(self):
+        """Kick off restoration in a background thread."""
+        self._restore_after_id = None
+        if not CV2_AVAILABLE or self._restoration_base is None:
+            if not CV2_AVAILABLE:
+                self.set_status("opencv-python not installed — pip install opencv-python")
+            return
+        self._restore_generation += 1
+        gen = self._restore_generation
+        exposure = self._restore_exposure_var.get()
+        contrast = self._restore_contrast_var.get()
+        red_cast = self._restore_red_var.get()
+        sharpen  = self._restore_sharpen_var.get()
+        base     = self._restoration_base.copy()
+
+        def worker():
+            result = _opencv_restore(base, exposure, contrast, red_cast, sharpen)
+            self.root.after(0, lambda: self._apply_restoration_result(result, gen))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_restoration_result(self, result: "Image.Image", gen: int):
+        """Called on main thread when the background worker finishes."""
+        if gen != self._restore_generation:
+            return   # stale — a newer slider move is already in flight
+        self._viewer_image = result
+        self._display_photo()
+
+    def _reset_restoration(self):
+        """Reset all restoration sliders and restore the base image."""
+        if self._restore_after_id is not None:
+            self.root.after_cancel(self._restore_after_id)
+            self._restore_after_id = None
+        self._restore_generation += 1   # cancel any in-flight worker
+        self._restore_exposure_var.set(0.0)
+        self._restore_contrast_var.set(0.0)
+        self._restore_red_var.set(0.0)
+        self._restore_sharpen_var.set(0.0)
+        for lbl, vv in self._restore_val_vars.items():
+            vv.set("0")
+        if self._restoration_base is not None:
+            self._viewer_image = self._restoration_base.copy()
+            self._display_photo()
+        self.set_status("Restoration reverted.")
+
+    def _set_restoration_base(self):
+        """Snapshot the current viewer image as the new restoration baseline
+        and reset all sliders.  Call this after any geometric edit or on load."""
+        if self._restore_after_id is not None:
+            self.root.after_cancel(self._restore_after_id)
+            self._restore_after_id = None
+        self._restore_generation += 1
+        self._restore_exposure_var.set(0.0)
+        self._restore_contrast_var.set(0.0)
+        self._restore_red_var.set(0.0)
+        self._restore_sharpen_var.set(0.0)
+        for vv in self._restore_val_vars.values():
+            vv.set("0")
+        if self._viewer_image is not None:
+            self._restoration_base = self._viewer_image.copy()
 
     # -----------------------------------------------------------------------
     # Photo viewer (mirrors PhotosUploader._display_photo / _on_canvas_resize)
