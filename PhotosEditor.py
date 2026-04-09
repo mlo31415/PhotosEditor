@@ -234,6 +234,7 @@ class PhotosEditor:
         self._target_selected_ids: set      = set()  # selected image ids (right grid)
         self._cell_by_id:       dict        = {}     # image_id → left cell widget
         self._target_cell_by_id: dict       = {}     # image_id → right cell widget
+        self._move_undo_stack:  list        = []     # undo records for drag-and-drop ops
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -272,6 +273,7 @@ class PhotosEditor:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", self._on_f5_refresh)
+        self.root.bind("<Control-z>", self._on_ctrl_z)
 
         # Refresh album hierarchy from Piwigo on every startup
         self.root.after(200, self._refresh_hierarchy_on_startup)
@@ -725,6 +727,12 @@ class PhotosEditor:
             self._target_frame.pack_forget()
             self._editor_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Move Mode")
+
+    def _on_ctrl_z(self, _event=None):
+        if self._mode == 'move':
+            self._undo_drag_drop()
+        else:
+            self._undo_edit()
 
     def _on_f5_refresh(self, _event=None):
         if self._mode != 'move':
@@ -1381,6 +1389,7 @@ class PhotosEditor:
             self._start_drag(event, img_dict, side)
         if self._drag_window:
             self._drag_window.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+            self._update_drag_hover_label(event)
 
     def _on_cell_release(self, event, img_dict: dict, cell: tk.Frame, side: str):
         was_drag = self._drag_window is not None
@@ -1433,6 +1442,10 @@ class PhotosEditor:
             label_text += f"  \u00d7{n}"
         tk.Label(win, text=label_text, bg="#add8e6",
                  font=("TkDefaultFont", 8, "bold")).pack()
+        self._drag_hover_label = tk.Label(win, text="", bg="#fffacd",
+                                          font=("TkDefaultFont", 8, "italic"),
+                                          padx=4, pady=2)
+        # Packed/unpacked dynamically as cursor moves over tree nodes
         self._drag_window = win
 
     def _execute_drop(self, event):
@@ -1441,20 +1454,45 @@ class PhotosEditor:
             self._drag_batch = []
             return
 
+        src_side     = self._drag_source_side
+        src_album_id = (self.current_album_id if src_side == 'left'
+                        else self.target_album_id)
+        op = 'copy' if self._drag_is_copy else 'move'
+
+        # ── Drop on a hierarchy tree node ────────────────────────────────────
+        tree_hit = self._hit_tree_node(event)
+        if tree_hit is not None:
+            dst_album_id, dst_album_name, dst_side = tree_hit
+            if src_album_id is not None and dst_album_id == src_album_id:
+                self._drag_batch = []
+                return
+            # Update the destination panel's selected album so the reload
+            # after the operation shows the right content.
+            if dst_side == 'right':
+                self.target_album_id   = dst_album_id
+                self.target_album_name = dst_album_name
+                self.target_album_var.set(dst_album_name)
+            else:
+                self.current_album_id   = dst_album_id
+                self.current_album_name = dst_album_name
+                self.album_var.set(dst_album_name)
+            batch = list(self._drag_batch)
+            self._drag_batch = []
+            self._execute_move_copy(batch, op, src_side, src_album_id, dst_album_id)
+            return
+
+        # ── Drop on a thumbnail grid ──────────────────────────────────────────
         widget_under = self.root.winfo_containing(event.x_root, event.y_root)
         dst_side = self._widget_side(widget_under)
-        src_side = self._drag_source_side
 
         if dst_side is None or dst_side == src_side:
             self._drag_batch = []
             return
 
         if src_side == 'left':
-            src_album_id = self.current_album_id
             dst_album_id = self.target_album_id
             dst_images   = self._target_album_images
         else:
-            src_album_id = self.target_album_id
             dst_album_id = self.current_album_id
             dst_images   = self._album_images
 
@@ -1466,7 +1504,7 @@ class PhotosEditor:
             return
 
         dst_ids = {d.get("id") for d in dst_images}
-        already = [d for d in self._drag_batch if d.get("id") in dst_ids]
+        already    = [d for d in self._drag_batch if d.get("id") in dst_ids]
         to_process = [d for d in self._drag_batch if d.get("id") not in dst_ids]
 
         if already:
@@ -1481,7 +1519,6 @@ class PhotosEditor:
         if not to_process:
             return
 
-        op = 'copy' if self._drag_is_copy else 'move'
         self._execute_move_copy(to_process, op, src_side, src_album_id, dst_album_id)
 
     def _on_grid_drop(self, event, side: str):
@@ -1593,6 +1630,42 @@ class PhotosEditor:
                 break
         return None
 
+    def _update_drag_hover_label(self, event):
+        """Show/hide an album-name label in the drag window based on cursor position."""
+        lbl = getattr(self, '_drag_hover_label', None)
+        if lbl is None:
+            return
+        hit = self._hit_tree_node(event)
+        if hit is not None:
+            _, fullname, _ = hit
+            short_name = fullname.rsplit(" / ", 1)[-1]
+            lbl.config(text=f"\u27a1 {short_name}")
+            lbl.pack(fill="x")
+        else:
+            lbl.pack_forget()
+        # Force the window to resize around the (possibly shown/hidden) label
+        if self._drag_window:
+            self._drag_window.update_idletasks()
+
+    def _hit_tree_node(self, event) -> tuple | None:
+        """Return (album_id, fullname, side) if the event lands on a tree row, else None."""
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        if widget is self._source_hierarchy_tree:
+            tree = self._source_hierarchy_tree
+            side = 'left'
+            fullname_map = self._source_tree_fullname_by_iid
+        elif widget is self._hierarchy_tree:
+            tree = self._hierarchy_tree
+            side = 'right'
+            fullname_map = self._tree_fullname_by_iid
+        else:
+            return None
+        y = event.y_root - tree.winfo_rooty()
+        iid = tree.identify_row(y)
+        if not iid:
+            return None
+        return int(iid), fullname_map.get(iid, iid), side
+
     # -----------------------------------------------------------------------
     # Immediate move/copy execution
     # -----------------------------------------------------------------------
@@ -1633,8 +1706,9 @@ class PhotosEditor:
             self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
 
         def worker():
-            errors = []
-            n_ok = 0
+            errors    = []
+            n_ok      = 0
+            undo_items = []   # {image_id, name, original_cats}
             try:
                 params = DownloadAlbumStructure.load_params()
                 client = DownloadAlbumStructure.PiwigoClient(
@@ -1649,19 +1723,19 @@ class PhotosEditor:
                     set_stage(f"{'Moving' if op == 'move' else 'Copying'}: {name}")
                     try:
                         info = client.get_image_info(image_id)
-                        current_cats = [int(c["id"]) for c in info.get("categories", [])]
+                        original_cats = [int(c["id"]) for c in info.get("categories", [])]
                         if op == 'copy':
-                            # Add dst album to the image's categories
-                            if dst_album_id not in current_cats:
-                                current_cats.append(dst_album_id)
-                                client.set_image_categories(image_id, current_cats)
+                            if dst_album_id not in original_cats:
+                                client.set_image_categories(
+                                    image_id, original_cats + [dst_album_id])
                         else:
-                            # Move: swap src album for dst album in categories
-                            new_cats = [c for c in current_cats if c != src_album_id]
+                            new_cats = [c for c in original_cats if c != src_album_id]
                             if dst_album_id not in new_cats:
                                 new_cats.append(dst_album_id)
-                            if new_cats != current_cats:
+                            if new_cats != original_cats:
                                 client.set_image_categories(image_id, new_cats)
+                        undo_items.append({'image_id': image_id, 'name': name,
+                                           'original_cats': original_cats})
                         n_ok += 1
                     except Exception as e:
                         errors.append(f"{name}: {e}")
@@ -1676,10 +1750,96 @@ class PhotosEditor:
                 if errors:
                     messagebox.showerror(
                         "Move/Copy Errors", "\n".join(errors), parent=self.root)
+                if undo_items:
+                    self._move_undo_stack.append({
+                        'description': f"{op.capitalize()} {len(undo_items)} photo(s)",
+                        'items': undo_items,
+                    })
                 self.set_status(
                     f"{op.capitalize()} complete: {n_ok} ok"
+                    + (f", {len(errors)} error(s)" if errors else ".")
+                    + ("  (Ctrl+Z to undo)" if undo_items else ""))
+                self._load_album_photos()
+                if self.target_album_id is not None:
+                    self._load_target_album_photos()
+
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # -----------------------------------------------------------------------
+    # Undo last drag-and-drop operation
+    # -----------------------------------------------------------------------
+    def _undo_drag_drop(self, _event=None):
+        if not self._move_undo_stack:
+            self.set_status("Nothing to undo.")
+            return
+        record = self._move_undo_stack.pop()
+        items  = record['items']
+        desc   = record['description']
+        total  = len(items)
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Undoing…")
+        dlg.resizable(False, False)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        dlg_alive = [True]
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
+
+        ttk.Label(dlg, text=f"Undoing: {desc}",
+                  padding=(16, 12, 16, 2)).pack()
+        pbar = ttk.Progressbar(dlg, mode="determinate", maximum=max(total, 1), length=380)
+        pbar.pack(padx=16, pady=(0, 4))
+        stage_var = tk.StringVar(value="Starting…")
+        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
+                  padding=(16, 0, 16, 12)).pack()
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+        def set_stage(msg):
+            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
+
+        def advance(n):
+            self.root.after(0, lambda: pbar.__setitem__("value", n) if dlg_alive[0] else None)
+
+        def close_dlg():
+            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+
+        def worker():
+            errors = []
+            n_ok   = 0
+            try:
+                params = DownloadAlbumStructure.load_params()
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                for i, item in enumerate(items):
+                    set_stage(f"Restoring: {item['name']}")
+                    try:
+                        client.set_image_categories(
+                            item['image_id'], item['original_cats'])
+                        n_ok += 1
+                    except Exception as e:
+                        errors.append(f"{item['name']}: {e}")
+                    advance(i + 1)
+                client.logout()
+            except Exception as e:
+                errors.append(f"Connection error: {e}")
+
+            def finish():
+                close_dlg()
+                if errors:
+                    messagebox.showerror("Undo Errors", "\n".join(errors), parent=self.root)
+                self.set_status(
+                    f"Undone: {desc} — {n_ok} restored"
                     + (f", {len(errors)} error(s)" if errors else "."))
-                # Reload both albums to reflect the new state
                 self._load_album_photos()
                 if self.target_album_id is not None:
                     self._load_target_album_photos()
