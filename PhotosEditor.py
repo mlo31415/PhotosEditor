@@ -220,6 +220,16 @@ class PhotosEditor:
         self._target_thumb_cells:  list       = []
         self._mode: str = 'editor'   # 'editor' | 'move'
 
+        # ── drag-and-drop / selection state ─────────────────────────────────
+        self._drag_batch:      list        = []     # list of img_dict being dragged
+        self._drag_is_copy:    bool        = False
+        self._drag_window:     tk.Toplevel | None = None  # floating preview
+        self._selected_ids:    set         = set()  # selected source image ids
+        self._cell_by_id:      dict        = {}     # image_id → cell widget
+        # pending operations: list of {'img_dict': ..., 'op': 'move'|'copy'}
+        self._pending_ops:     list        = []
+        self._pending_image_ids: set       = set()  # for dupe guard
+
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
         self._viewer_tk:           ImageTk.PhotoImage | None = None
@@ -294,6 +304,7 @@ class PhotosEditor:
     # ── left panel: thumbnail browser ───────────────────────────────────────
     def _build_thumb_panel(self, parent) -> ttk.Frame:
         frame = ttk.LabelFrame(parent, text="Album Photos", padding=4)
+        self._thumb_panel_frame = frame
 
         top = ttk.Frame(frame)
         top.pack(fill="x", pady=(0, 4))
@@ -516,6 +527,12 @@ class PhotosEditor:
         ttk.Label(top, text="Album:").pack(side="left")
         ttk.Label(top, textvariable=self.target_album_var,
                   foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
+        self.upload_changes_btn = tk.Button(
+            top, text="\u2b06 Upload Changes",
+            command=self._upload_changes,
+            background="#add8e6",
+            font=("TkDefaultFont", 10, "bold"))
+        self.upload_changes_btn.pack(side="right", padx=(4, 0))
         ttk.Label(top, textvariable=self.target_thumb_count_var,
                   foreground="gray").pack(side="right", padx=4)
 
@@ -558,12 +575,14 @@ class PhotosEditor:
             self.current_album_id   = album_id
             self.current_album_name = album_name
             self.album_var.set(album_name or "(none)")
+            self.root.after(300, self._load_album_photos)
         target_id   = self._state.get("target_album_id",   None)
         target_name = self._state.get("target_album_name", "")
         if target_id is not None:
             self.target_album_id   = target_id
             self.target_album_name = target_name
             self.target_album_var.set(target_name or "(none)")
+            self.root.after(300, self._load_target_album_photos)
 
     def _set_main_sash(self, pos: int):
         try:
@@ -597,16 +616,19 @@ class PhotosEditor:
         self.root.destroy()
 
     def _toggle_mode(self):
+        self._clear_selection()
         if self._mode == 'editor':
             self._mode = 'move'
             self._editor_frame.pack_forget()
             self._target_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Editor Mode")
+            self._thumb_panel_frame.config(text="Source Album")
         else:
             self._mode = 'editor'
             self._target_frame.pack_forget()
             self._editor_frame.pack(fill="both", expand=True)
             self._mode_btn.config(text="Switch to Photo Move Mode")
+            self._thumb_panel_frame.config(text="Album Photos")
 
     # -----------------------------------------------------------------------
     # Status
@@ -806,6 +828,7 @@ class PhotosEditor:
         img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
         img_lbl.pack()
         self._thumb_img_labels[image_id] = img_lbl
+        self._cell_by_id[image_id] = cell
         name_lbl = tk.Label(cell, text=_truncate(name, 20),
                             bg="#3a3a3a", fg="#dddddd",
                             font=("TkDefaultFont", 8), anchor="center",
@@ -825,9 +848,12 @@ class PhotosEditor:
 
         tip = _Tooltip(_tip_text)
         for w in (cell, img_lbl, name_lbl):
-            w.bind("<Button-1>", lambda e, d=img_dict: self._on_thumb_click(d))
-            w.bind("<Enter>",    lambda e, c=cell: c.configure(bg="#5a5a5a", relief="raised"))
-            w.bind("<Leave>",    lambda e, c=cell: c.configure(bg="#3a3a3a", relief="flat"))
+            w.bind("<Button-1>",        lambda e, d=img_dict, c=cell: self._on_source_click(e, d, c))
+            w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_drag_start(e, d, c))
+            w.bind("<B1-Motion>",       lambda e: self._on_drag_motion(e))
+            w.bind("<ButtonRelease-1>", lambda e: self._on_drag_release(e))
+            w.bind("<Enter>",           lambda e, iid=image_id, c=cell: self._on_source_enter(iid, c))
+            w.bind("<Leave>",           lambda e, iid=image_id, c=cell: self._on_source_leave(iid, c))
             tip.attach(w)
 
         self._thumb_cells.append(cell)
@@ -840,6 +866,8 @@ class PhotosEditor:
         self._thumb_cache.clear()
         self._thumb_tk.clear()
         self._thumb_img_labels.clear()
+        self._cell_by_id.clear()
+        self._selected_ids.clear()
         self._album_images.clear()
 
     # -----------------------------------------------------------------------
@@ -1006,14 +1034,59 @@ class PhotosEditor:
             if caption: parts.append(f"Caption: {caption}")
             return "\n".join(parts)
 
+        def _show_target_menu(event, iid=image_id, d=img_dict, c=cell):
+            menu = tk.Menu(c, tearoff=0)
+            menu.add_command(label="Delete Photo",
+                             command=lambda: self._delete_target_photo(iid, d, c))
+            menu.tk_popup(event.x_root, event.y_root)
+
         tip = _Tooltip(_tip_text)
         for w in (cell, img_lbl, name_lbl):
-            w.bind("<Enter>", lambda e, c=cell: c.configure(bg="#5a5a5a", relief="raised"))
-            w.bind("<Leave>", lambda e, c=cell: c.configure(bg="#3a3a3a", relief="flat"))
+            w.bind("<Enter>",    lambda e, c=cell: c.configure(bg="#5a5a5a", relief="raised"))
+            w.bind("<Leave>",    lambda e, c=cell: c.configure(bg="#3a3a3a", relief="flat"))
+            w.bind("<Button-3>", _show_target_menu)
             tip.attach(w)
 
         self._target_thumb_cells.append(cell)
         self._reflow_target_grid()
+
+    def _delete_target_photo(self, image_id: int, img_dict: dict, cell: tk.Frame):
+        """Delete an existing target-album photo from Piwigo (RMB menu)."""
+        name = img_dict.get("file") or img_dict.get("name") or str(image_id)
+        if not messagebox.askyesno(
+                "Delete Photo",
+                f'Remove "{name}" from the target album on Piwigo?\n\n'
+                "This removes it from the album only — it will not be deleted "
+                "from Piwigo entirely if it belongs to other albums.",
+                parent=self.root):
+            return
+
+        def worker():
+            try:
+                params = DownloadAlbumStructure.load_params()
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                info = client.get_image_info(image_id)
+                current_cats = [int(c["id"]) for c in info.get("categories", [])]
+                new_cats = [c for c in current_cats if c != self.target_album_id]
+                if new_cats != current_cats:
+                    client.set_image_categories(image_id, new_cats)
+                client.logout()
+                def _done():
+                    self._target_thumb_cells = [
+                        w for w in self._target_thumb_cells if w != cell]
+                    cell.destroy()
+                    self._reflow_target_grid()
+                    self.set_status(f'Deleted "{name}" from target album.')
+                self.root.after(0, _done)
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Delete Failed", str(e),
+                                                                  parent=self.root))
+        self.set_status(f'Deleting "{name}"…')
+        threading.Thread(target=worker, daemon=True).start()
 
     def _clear_target_thumbnails(self):
         for cell in self._target_thumb_cells:
@@ -1044,6 +1117,401 @@ class PhotosEditor:
 
     def _on_target_mousewheel(self, event):
         self._target_thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    # -----------------------------------------------------------------------
+    # Source thumbnail click / hover / selection
+    # -----------------------------------------------------------------------
+    def _on_source_click(self, event, img_dict: dict, cell: tk.Frame):
+        if self._mode == 'move':
+            self._toggle_selection(img_dict.get("id"), cell)
+        else:
+            self._on_thumb_click(img_dict)
+
+    def _toggle_selection(self, image_id, cell: tk.Frame):
+        if image_id in self._selected_ids:
+            self._selected_ids.discard(image_id)
+            self._apply_cell_bg(image_id, cell, selected=False)
+        else:
+            self._selected_ids.add(image_id)
+            self._apply_cell_bg(image_id, cell, selected=True)
+        n = len(self._selected_ids)
+        self.set_status(f"{n} photo{'s' if n != 1 else ''} selected" if n else "Ready")
+
+    def _apply_cell_bg(self, image_id, cell: tk.Frame, selected: bool):
+        bg = "#1a6b9a" if selected else "#3a3a3a"
+        fg = "#ffffff"  if selected else "#dddddd"
+        try:
+            for child in cell.winfo_children():
+                child.configure(bg=bg)
+                if isinstance(child, tk.Label) and child.cget("fg") in ("#dddddd", "#ffffff"):
+                    child.configure(fg=fg)
+            cell.configure(bg=bg, relief="sunken" if selected else "flat")
+        except Exception:
+            pass
+
+    def _on_source_enter(self, image_id, cell: tk.Frame):
+        if image_id not in self._selected_ids:
+            cell.configure(bg="#5a5a5a", relief="raised")
+
+    def _on_source_leave(self, image_id, cell: tk.Frame):
+        if image_id not in self._selected_ids:
+            cell.configure(bg="#3a3a3a", relief="flat")
+
+    def _clear_selection(self):
+        for iid in list(self._selected_ids):
+            cell = self._cell_by_id.get(iid)
+            if cell:
+                self._apply_cell_bg(iid, cell, selected=False)
+        self._selected_ids.clear()
+
+    # -----------------------------------------------------------------------
+    # Drag-and-drop  (source → target, move mode only)
+    # -----------------------------------------------------------------------
+    def _on_drag_start(self, event, img_dict: dict, cell: tk.Frame):
+        if self._mode != 'move':
+            return
+        self._drag_is_copy = bool(event.state & 0x0004)
+        # If the dragged cell is in the selection, drag all selected;
+        # otherwise drag only this one (without changing the selection).
+        image_id = img_dict.get("id")
+        if image_id in self._selected_ids:
+            self._drag_batch = [
+                d for d in self._album_images
+                if d.get("id") in self._selected_ids
+            ]
+        else:
+            self._drag_batch = [img_dict]
+
+        # Floating preview
+        pil = self._thumb_cache.get(image_id)
+        if pil and PIL_AVAILABLE:
+            preview = pil.copy()
+            preview.thumbnail((80, 80), Image.Resampling.LANCZOS)
+            self._drag_tk_ref = ImageTk.PhotoImage(preview)
+        else:
+            self._drag_tk_ref = None
+        win = tk.Toplevel(self.root)
+        win.wm_overrideredirect(True)
+        win.attributes("-alpha", 0.75)
+        win.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+        lbl = tk.Label(win, image=self._drag_tk_ref if self._drag_tk_ref else None,
+                       text="" if self._drag_tk_ref else "\u2b06",
+                       bg="#add8e6", relief="solid", borderwidth=1)
+        lbl.pack()
+        n = len(self._drag_batch)
+        label_text = ("COPY" if self._drag_is_copy else "MOVE")
+        if n > 1:
+            label_text += f"  ×{n}"
+        tk.Label(win, text=label_text, bg="#add8e6",
+                 font=("TkDefaultFont", 8, "bold")).pack()
+        self._drag_window = win
+
+    def _on_drag_motion(self, event):
+        if self._drag_window is None:
+            return
+        self._drag_window.wm_geometry(
+            f"+{event.x_root + 10}+{event.y_root + 10}")
+
+    def _on_drag_release(self, event):
+        if self._drag_window is not None:
+            self._drag_window.destroy()
+            self._drag_window = None
+        if not self._drag_batch or self._mode != 'move':
+            self._drag_batch = []
+            return
+        widget_under = self.root.winfo_containing(event.x_root, event.y_root)
+        if not self._widget_is_in_target(widget_under):
+            self._drag_batch = []
+            return
+        if self.target_album_id is None:
+            self._drag_batch = []
+            self._show_over_target(
+                "No Target Album",
+                "Please select a Target Album before moving or copying photos.")
+            return
+
+        op = 'copy' if self._drag_is_copy else 'move'
+        already_queued = []
+        queued_now = []
+        for img_dict in self._drag_batch:
+            image_id = img_dict.get("id")
+            if image_id in self._pending_image_ids:
+                name = img_dict.get("file") or img_dict.get("name") or str(image_id)
+                already_queued.append(name)
+            else:
+                self._pending_ops.append({'img_dict': img_dict, 'op': op})
+                self._pending_image_ids.add(image_id)
+                self._add_target_thumb_from_source(img_dict, op)
+                queued_now.append(img_dict)
+
+        self._drag_batch = []
+        if already_queued:
+            messagebox.showwarning(
+                "Already Queued",
+                f"{len(already_queued)} photo(s) already in the pending queue "
+                f"and were skipped:\n  " + "\n  ".join(already_queued) +
+                "\n\nRight-click a queued item in Target Album to remove it first.",
+                parent=self.root)
+        if queued_now:
+            self.set_status(
+                f"Queued {op}: {len(queued_now)} photo(s)  "
+                f"({len(self._pending_ops)} total pending)")
+
+    def _show_over_target(self, title: str, message: str):
+        """Show a warning dialog centred over the Target Album panel."""
+        self.root.update_idletasks()
+        tx = self._target_frame.winfo_rootx()
+        ty = self._target_frame.winfo_rooty()
+        tw = self._target_frame.winfo_width()
+        th = self._target_frame.winfo_height()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=message, wraplength=320,
+                 justify="left", padx=16, pady=12).pack()
+        ttk.Button(dlg, text="OK", command=dlg.destroy).pack(pady=(0, 10))
+
+        dlg.update_idletasks()
+        dw = dlg.winfo_reqwidth()
+        dh = dlg.winfo_reqheight()
+        x = tx + (tw - dw) // 2
+        y = ty + (th - dh) // 2
+        dlg.geometry(f"{dw}x{dh}+{x}+{y}")
+        dlg.wait_window()
+
+    def _widget_is_in_target(self, widget) -> bool:
+        """Return True if widget is a descendant of _target_frame."""
+        if widget is None:
+            return False
+        w = widget
+        while w is not None:
+            if w == self._target_frame:
+                return True
+            try:
+                w = w.master
+            except Exception:
+                break
+        return False
+
+    def _add_target_thumb_from_source(self, img_dict: dict, op: str):
+        """Add a thumbnail to the target grid from a pending move/copy."""
+        image_id = img_dict.get("id")
+        pil = self._thumb_cache.get(image_id)
+        if pil is None:
+            return
+        tk_img = ImageTk.PhotoImage(pil)
+        self._target_thumb_tk[f"pending_{image_id}"] = tk_img
+
+        name = img_dict.get("name") or img_dict.get("file") or f"#{image_id}"
+        op_color = "#c8e6c9" if op == 'copy' else "#ffccbc"   # green-ish / orange-ish
+
+        cell = tk.Frame(self._target_grid_frame, bg=op_color, relief="ridge",
+                        borderwidth=2, padx=2, pady=2)
+        img_lbl = tk.Label(cell, image=tk_img, bg=op_color)
+        img_lbl.pack()
+        name_lbl = tk.Label(cell, text=_truncate(name, 20),
+                            bg=op_color, fg="#111111",
+                            font=("TkDefaultFont", 8, "bold"), anchor="center",
+                            wraplength=self._thumb_size[0])
+        name_lbl.pack(fill="x")
+        badge = tk.Label(cell, text=op.upper(), bg=op_color,
+                         font=("TkDefaultFont", 7), fg="#555555")
+        badge.pack()
+
+        def _tip_text(d=img_dict):
+            parts = []
+            fname = d.get("file", "").strip()
+            if fname:
+                parts.append(fname)
+            caption = d.get("comment", "").strip()
+            if caption:
+                parts.append(f"Caption: {caption}")
+            return "\n".join(parts)
+
+        def _remove_pending(iid=image_id, c=cell):
+            self._pending_ops = [p for p in self._pending_ops
+                                  if p['img_dict'].get('id') != iid]
+            self._pending_image_ids.discard(iid)
+            c.destroy()
+            self._reflow_target_grid()
+            self.set_status(f"Removed from queue.  ({len(self._pending_ops)} pending)")
+
+        tip = _Tooltip(_tip_text)
+        for w in (cell, img_lbl, name_lbl, badge):
+            w.bind("<Button-3>", lambda e, fn=_remove_pending: fn())
+            tip.attach(w)
+
+        self._target_thumb_cells.append(cell)
+        self._reflow_target_grid()
+
+    # -----------------------------------------------------------------------
+    # Upload Changes
+    # -----------------------------------------------------------------------
+    def _upload_changes(self):
+        if not self._pending_ops:
+            messagebox.showinfo("Nothing to do",
+                                "No photos are queued for move or copy.",
+                                parent=self.root)
+            return
+        if self.target_album_id is None:
+            messagebox.showwarning("No target album",
+                                   "Please select a Target Album first.",
+                                   parent=self.root)
+            return
+        if self.current_album_id is None:
+            messagebox.showwarning("No source album",
+                                   "No source album is loaded.",
+                                   parent=self.root)
+            return
+
+        moves  = [p for p in self._pending_ops if p['op'] == 'move']
+        copies = [p for p in self._pending_ops if p['op'] == 'copy']
+        total  = len(moves) + len(copies)
+
+        # ── progress dialog ─────────────────────────────────────────────────
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Uploading Changes")
+        dlg.resizable(False, False)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        dlg_alive = [True]
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
+
+        ttk.Label(dlg, text=f"Processing {total} photo(s)…",
+                  padding=(16, 12, 16, 2)).pack()
+        pbar = ttk.Progressbar(dlg, mode="determinate", maximum=total, length=380)
+        pbar.pack(padx=16, pady=(0, 4))
+        stage_var = tk.StringVar(value="Starting…")
+        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
+                  padding=(16, 0, 16, 12)).pack()
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+        def set_stage(msg):
+            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
+
+        def advance():
+            def _do():
+                if dlg_alive[0]:
+                    pbar["value"] = pbar["value"] + 1
+            self.root.after(0, _do)
+
+        def close_dlg():
+            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+
+        pending_ops_snapshot = list(self._pending_ops)
+
+        def worker():
+            errors = []
+            try:
+                params = DownloadAlbumStructure.load_params()
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                verify = params.get("verify_ssl", True)
+
+                # ── copies: add target album to image's categories ───────────
+                for item in copies:
+                    d = item['img_dict']
+                    image_id = d.get("id")
+                    name = d.get("file") or d.get("name") or str(image_id)
+                    set_stage(f"Copying: {name}")
+                    try:
+                        info = client.get_image_info(image_id)
+                        current_cats = [
+                            int(c["id"])
+                            for c in info.get("categories", [])
+                        ]
+                        if self.target_album_id not in current_cats:
+                            current_cats.append(self.target_album_id)
+                            client.set_image_categories(image_id, current_cats)
+                    except Exception as e:
+                        errors.append(f"Copy {name}: {e}")
+                    advance()
+
+                # ── moves: upload file then remove from source ───────────────
+                for item in moves:
+                    d = item['img_dict']
+                    image_id = d.get("id")
+                    name = d.get("file") or d.get("name") or str(image_id)
+                    set_stage(f"Moving: {name}")
+                    try:
+                        # Download the full image
+                        url = d.get("element_url") or _pick_derivative_url(
+                            d, ("large", "medium", "small", "thumb"))
+                        if not url:
+                            raise ValueError("No URL found for image")
+                        import warnings as _w
+                        with _w.catch_warnings():
+                            if not verify:
+                                _w.simplefilter("ignore",
+                                    urllib3.exceptions.InsecureRequestWarning)
+                            resp = requests.get(url, verify=verify, timeout=60)
+                            resp.raise_for_status()
+                        # Write to a temp file for upload
+                        import tempfile as _tmp
+                        suffix = Path(name).suffix or ".jpg"
+                        with _tmp.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+                            tf.write(resp.content)
+                            tmp_path = tf.name
+                        try:
+                            client.upload_image(
+                                tmp_path, self.target_album_id,
+                                name=name)
+                            # Remove from source album
+                            info = client.get_image_info(image_id)
+                            current_cats = [
+                                int(c["id"])
+                                for c in info.get("categories", [])
+                            ]
+                            new_cats = [c for c in current_cats
+                                        if c != self.current_album_id]
+                            if new_cats != current_cats:
+                                client.set_image_categories(image_id, new_cats)
+                        finally:
+                            try:
+                                Path(tmp_path).unlink()
+                            except Exception:
+                                pass
+                    except Exception as e:
+                        errors.append(f"Move {name}: {e}")
+                    advance()
+
+                client.logout()
+            except Exception as e:
+                errors.append(f"Connection error: {e}")
+
+            def finish():
+                close_dlg()
+                if errors:
+                    messagebox.showerror(
+                        "Upload Changes — Errors",
+                        "\n".join(errors),
+                        parent=self.root)
+                    self.set_status(f"Upload Changes finished with {len(errors)} error(s).")
+                else:
+                    self.set_status(
+                        f"Upload Changes complete: "
+                        f"{len(copies)} copied, {len(moves)} moved.")
+                # Clear the pending queue and the pending cells from target grid
+                completed_ids = {p['img_dict'].get('id')
+                                  for p in pending_ops_snapshot
+                                  if p['img_dict'].get('id') not in
+                                  {e.split(':')[0] for e in errors}}
+                self._pending_ops = [p for p in self._pending_ops
+                                      if p['img_dict'].get('id') not in completed_ids]
+                self._pending_image_ids -= completed_ids
+            self.root.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # -----------------------------------------------------------------------
     # Thumbnail click → load photo in editor
