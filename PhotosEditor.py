@@ -325,6 +325,11 @@ class PhotosEditor:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", self._on_f5_refresh)
         self.root.bind("<Control-z>", self._on_ctrl_z)
+        self._ctrl_held: bool = False
+        self.root.bind("<KeyPress-Control_L>",   lambda e: setattr(self, '_ctrl_held', True),  add="+")
+        self.root.bind("<KeyPress-Control_R>",   lambda e: setattr(self, '_ctrl_held', True),  add="+")
+        self.root.bind("<KeyRelease-Control_L>", lambda e: setattr(self, '_ctrl_held', False), add="+")
+        self.root.bind("<KeyRelease-Control_R>", lambda e: setattr(self, '_ctrl_held', False), add="+")
 
         # Refresh album hierarchy from Piwigo on every startup
         self.root.after(200, self._refresh_hierarchy_on_startup)
@@ -1197,8 +1202,14 @@ class PhotosEditor:
 
         def _show_left_menu(event, iid=image_id, d=img_dict, c=cell):
             menu = tk.Menu(c, tearoff=0)
-            menu.add_command(label="Remove from Album",
-                             command=lambda: self._remove_from_album(iid, d, 'left'))
+            if iid in self._selected_ids and len(self._selected_ids) > 1:
+                n = len(self._selected_ids)
+                menu.add_command(
+                    label=f"Remove {n} selected from Album",
+                    command=lambda: self._remove_selection_from_album('left'))
+            else:
+                menu.add_command(label="Remove from Album",
+                                 command=lambda: self._remove_from_album(iid, d, 'left'))
             menu.tk_popup(event.x_root, event.y_root)
 
         tip = _Tooltip(_tip_text)
@@ -1395,8 +1406,14 @@ class PhotosEditor:
 
         def _show_right_menu(event, iid=image_id, d=img_dict, c=cell):
             menu = tk.Menu(c, tearoff=0)
-            menu.add_command(label="Remove from Album",
-                             command=lambda: self._remove_from_album(iid, d, 'right'))
+            if iid in self._target_selected_ids and len(self._target_selected_ids) > 1:
+                n = len(self._target_selected_ids)
+                menu.add_command(
+                    label=f"Remove {n} selected from Album",
+                    command=lambda: self._remove_selection_from_album('right'))
+            else:
+                menu.add_command(label="Remove from Album",
+                                 command=lambda: self._remove_from_album(iid, d, 'right'))
             menu.tk_popup(event.x_root, event.y_root)
 
         tip = _Tooltip(_tip_text)
@@ -1484,7 +1501,7 @@ class PhotosEditor:
             self._on_thumb_click(img_dict)
 
     def _start_drag(self, event, img_dict: dict, side: str):
-        self._drag_is_copy = bool(event.state & 0x0004)
+        self._drag_is_copy = self._ctrl_held
         image_id = img_dict.get("id")
         if side == 'left':
             sel_ids = self._selected_ids
@@ -1929,7 +1946,67 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Remove from album (RMB handler — both sides)
     # -----------------------------------------------------------------------
+    def _remove_selection_from_album(self, side: str):
+        """Remove all selected images on `side` from their album."""
+        if side == 'left':
+            ids    = set(self._selected_ids)
+            images = self._album_images
+        else:
+            ids    = set(self._target_selected_ids)
+            images = self._target_album_images
+        if not ids:
+            return
+        batch = [d for d in images if d.get("id") in ids]
+        # Defer so the menu can dismiss first
+        self.root.after(50, lambda: self._remove_selection_confirm(batch, side))
+
+    def _remove_selection_confirm(self, batch: list, side: str):
+        album_name = self.current_album_name if side == 'left' else self.target_album_name
+        album_id   = self.current_album_id   if side == 'left' else self.target_album_id
+        n = len(batch)
+        if not messagebox.askyesno(
+                "Remove from Album",
+                f'Remove {n} photo(s) from "{album_name}"?\n\n'
+                "This only removes the album association — photos remain in Piwigo.",
+                parent=self.root):
+            return
+
+        def worker():
+            errors = []
+            try:
+                params = DownloadAlbumStructure.load_params()
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                for d in batch:
+                    iid  = d.get("id")
+                    name = d.get("file") or d.get("name") or str(iid)
+                    try:
+                        info = client.get_image_info(iid)
+                        current_cats = [int(c["id"]) for c in info.get("categories", [])]
+                        new_cats = [c for c in current_cats if c != album_id]
+                        if new_cats != current_cats:
+                            client.set_image_categories(iid, new_cats)
+                        self.root.after(0, lambda i=iid, nm=name: self._after_remove(i, nm, side))
+                    except Exception as e:
+                        errors.append(f"{name}: {e}")
+                client.logout()
+            except Exception as e:
+                errors.append(f"Connection error: {e}")
+            if errors:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Remove Errors", "\n".join(errors), parent=self.root))
+
+        self.set_status(f"Removing {n} photo(s)…")
+        threading.Thread(target=worker, daemon=True).start()
+
     def _remove_from_album(self, image_id: int, img_dict: dict, side: str):
+        # Defer so the RMB menu can fully dismiss before the dialog appears.
+        self.root.after(50, lambda: self._remove_from_album_confirm(image_id, img_dict, side))
+
+    def _remove_from_album_confirm(self, image_id: int, img_dict: dict, side: str):
         album_id   = self.current_album_id   if side == 'left' else self.target_album_id
         album_name = self.current_album_name if side == 'left' else self.target_album_name
         name = img_dict.get("file") or img_dict.get("name") or str(image_id)
