@@ -3,7 +3,7 @@
     "id": 48,
     "name": "Fan Photos",
     "nb_images": 0,
-    "total_nb_images": 953,
+    "total_nb_images": 963,
     "children": [
       {
         "id": 49,
@@ -128,8 +128,8 @@
       {
         "id": 65,
         "name": "Fans Around the World",
-        "nb_images": 3,
-        "total_nb_images": 3,
+        "nb_images": 4,
+        "total_nb_images": 4,
         "children": [],
         "fullname": "Fan Photos / Fans Around the World"
       },
@@ -362,7 +362,16 @@
         "name": "UK Fandom",
         "nb_images": 9,
         "total_nb_images": 9,
-        "children": [],
+        "children": [
+          {
+            "id": 665,
+            "name": "1950s UK Fandom",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Fan Photos / UK Fandom / 1950s UK Fandom"
+          }
+        ],
         "fullname": "Fan Photos / UK Fandom"
       },
       {
@@ -400,14 +409,14 @@
       {
         "id": 627,
         "name": "ZZtest",
-        "nb_images": 14,
-        "total_nb_images": 18,
+        "nb_images": 17,
+        "total_nb_images": 27,
         "children": [
           {
             "id": 652,
             "name": "yyTest",
-            "nb_images": 4,
-            "total_nb_images": 4,
+            "nb_images": 10,
+            "total_nb_images": 10,
             "children": [],
             "fullname": "Fan Photos / ZZtest / yyTest"
           }
@@ -416,6 +425,14 @@
       }
     ],
     "fullname": "Fan Photos"
+  },
+  {
+    "id": 653,
+    "name": "Laurie Mann -- TEST",
+    "nb_images": 29,
+    "total_nb_images": 29,
+    "children": [],
+    "fullname": "Laurie Mann -- TEST"
   },
   {
     "id": 629,
@@ -486,7 +503,7 @@
     "id": 154,
     "name": "Regional Conventions",
     "nb_images": 0,
-    "total_nb_images": 2141,
+    "total_nb_images": 2148,
     "children": [
       {
         "id": 155,
@@ -2509,8 +2526,8 @@
       {
         "id": 338,
         "name": "SmofCon",
-        "nb_images": 0,
-        "total_nb_images": 100,
+        "nb_images": 7,
+        "total_nb_images": 107,
         "children": [
           {
             "id": 339,
@@ -2591,6 +2608,14 @@
             "total_nb_images": 11,
             "children": [],
             "fullname": "Regional Conventions / SmofCon / SmofCon 26"
+          },
+          {
+            "id": 669,
+            "name": "Smofcon 29 (Amsterdam)",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Regional Conventions / SmofCon / Smofcon 29 (Amsterdam)"
           },
           {
             "id": 349,
@@ -3179,7 +3204,7 @@
     "id": 404,
     "name": "Worldcons",
     "nb_images": 0,
-    "total_nb_images": 5615,
+    "total_nb_images": 5892,
     "children": [
       {
         "id": 405,
@@ -3314,9 +3339,26 @@
       {
         "id": 526,
         "name": "Chicon 7 (2012)",
-        "nb_images": 0,
-        "total_nb_images": 0,
-        "children": [],
+        "nb_images": 5,
+        "total_nb_images": 72,
+        "children": [
+          {
+            "id": 668,
+            "name": "People",
+            "nb_images": 33,
+            "total_nb_images": 33,
+            "children": [],
+            "fullname": "Worldcons / Chicon 7 (2012) / People"
+          },
+          {
+            "id": 667,
+            "name": "Setup",
+            "nb_images": 34,
+            "total_nb_images": 34,
+            "children": [],
+            "fullname": "Worldcons / Chicon 7 (2012) / Setup"
+          }
+        ],
         "fullname": "Worldcons / Chicon 7 (2012)"
       },
       {
@@ -3588,8 +3630,8 @@
       {
         "id": 555,
         "name": "LoneStarCon 3 (2013)",
-        "nb_images": 1,
-        "total_nb_images": 1,
+        "nb_images": 157,
+        "total_nb_images": 157,
         "children": [],
         "fullname": "Worldcons / LoneStarCon 3 (2013)"
       },
@@ -3773,22 +3815,22 @@
       {
         "id": 440,
         "name": "Sasquan (2015)",
-        "nb_images": 38,
-        "total_nb_images": 68,
+        "nb_images": 74,
+        "total_nb_images": 109,
         "children": [
           {
             "id": 660,
-            "name": "Friday Night Thing",
-            "nb_images": 25,
-            "total_nb_images": 25,
+            "name": "First Night",
+            "nb_images": 27,
+            "total_nb_images": 27,
             "children": [],
-            "fullname": "Worldcons / Sasquan (2015) / Friday Night Thing"
+            "fullname": "Worldcons / Sasquan (2015) / First Night"
           },
           {
             "id": 661,
             "name": "Mordor",
-            "nb_images": 5,
-            "total_nb_images": 5,
+            "nb_images": 8,
+            "total_nb_images": 8,
             "children": [],
             "fullname": "Worldcons / Sasquan (2015) / Mordor"
           }
@@ -3810,6 +3852,14 @@
         "total_nb_images": 87,
         "children": [],
         "fullname": "Worldcons / Seacon 79 (1979)"
+      },
+      {
+        "id": 666,
+        "name": "Seattle (2025)",
+        "nb_images": 8,
+        "total_nb_images": 8,
+        "children": [],
+        "fullname": "Worldcons / Seattle (2025)"
       },
       {
         "id": 439,
