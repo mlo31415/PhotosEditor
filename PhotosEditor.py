@@ -406,6 +406,9 @@ class PhotosEditor:
         self._source_filter_var.trace_add("write", self._on_source_tree_filter)
         self._source_hierarchy_tree.bind("<<TreeviewSelect>>", self._on_source_hierarchy_select)
         self._source_hierarchy_tree.bind("<Double-1>",         self._on_source_hierarchy_select)
+        self._source_hierarchy_tree.bind("<Button-3>",
+            lambda e: self._on_tree_rmb(e, self._source_hierarchy_tree,
+                                        self._source_tree_fullname_by_iid))
         self._source_hierarchy_tree.bind(
             "<MouseWheel>",
             lambda e: self._source_hierarchy_tree.yview_scroll(
@@ -695,6 +698,9 @@ class PhotosEditor:
         self._tree_filter_var.trace_add("write", self._on_tree_filter)
         self._hierarchy_tree.bind("<<TreeviewSelect>>", self._on_hierarchy_select)
         self._hierarchy_tree.bind("<Double-1>",         self._on_hierarchy_select)
+        self._hierarchy_tree.bind("<Button-3>",
+            lambda e: self._on_tree_rmb(e, self._hierarchy_tree,
+                                        self._tree_fullname_by_iid))
         self._hierarchy_tree.bind(
             "<MouseWheel>",
             lambda e: self._hierarchy_tree.yview_scroll(
@@ -1011,6 +1017,98 @@ class PhotosEditor:
         if album_id != self.target_album_id:
             self._on_target_album_selected(album_id, fullname)
 
+    def _on_tree_rmb(self, event, tree: ttk.Treeview, fullname_map: dict):
+        """Right-click on either hierarchy tree — offer 'Add sub-album'."""
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        fullname = fullname_map.get(iid, iid)
+        short    = fullname.rsplit(" / ", 1)[-1]
+        parent_id = int(iid)
+
+        menu = tk.Menu(tree, tearoff=0)
+        menu.add_command(
+            label=f"Add sub-album under \"{short}\"",
+            command=lambda: self.root.after(
+                50, lambda: self._add_sub_album_dialog(parent_id, short, tree)))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _add_sub_album_dialog(self, parent_id: int, parent_name: str,
+                              tree: ttk.Treeview):
+        """Show a simple name-entry dialog, then create the sub-album."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Add Sub-Album")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text=f"New sub-album under \"{parent_name}\":",
+                  padding=(16, 12, 16, 4)).pack()
+        name_var = tk.StringVar()
+        entry = ttk.Entry(dlg, textvariable=name_var, width=40)
+        entry.pack(padx=16, pady=(0, 8))
+        entry.focus_set()
+
+        msg_var = tk.StringVar()
+        msg_lbl = ttk.Label(dlg, textvariable=msg_var, foreground="red",
+                            padding=(16, 0, 16, 4))
+        msg_lbl.pack()
+
+        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
+        btn_row.pack()
+
+        def _create():
+            name = name_var.get().strip()
+            if not name:
+                msg_var.set("Please enter a name.")
+                return
+            ok_btn.config(state="disabled")
+            cancel_btn.config(state="disabled")
+            msg_var.set("Creating…")
+            dlg.update_idletasks()
+
+            def worker():
+                try:
+                    params = DownloadAlbumStructure.load_params()
+                    client = DownloadAlbumStructure.PiwigoClient(
+                        params["url"], params["username"], params["password"],
+                        verify_ssl=params.get("verify_ssl", True),
+                        rate_limit_calls_per_second=params.get(
+                            "rate_limit_calls_per_second", 2.0))
+                    client.login(params["username"], params["password"])
+                    new_id = client.create_album(name, parent_id=parent_id)
+                    client.logout()
+                    self.root.after(0, lambda: _done(new_id, name))
+                except Exception as e:
+                    self.root.after(0, lambda: _error(str(e)))
+
+            def _done(new_id: int, album_name: str):
+                dlg.destroy()
+                self.set_status(f"Created sub-album \"{album_name}\" (id={new_id}).")
+                # Refresh both trees so the new album appears immediately
+                self._refresh_hierarchy_on_startup()
+
+            def _error(msg: str):
+                msg_var.set(f"Error: {msg}")
+                ok_btn.config(state="normal")
+                cancel_btn.config(state="normal")
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ok_btn     = ttk.Button(btn_row, text="Create", command=_create)
+        cancel_btn = ttk.Button(btn_row, text="Cancel", command=dlg.destroy)
+        ok_btn.pack(side="left", padx=(0, 8))
+        cancel_btn.pack(side="left")
+
+        entry.bind("<Return>", lambda e: _create())
+        entry.bind("<Escape>", lambda e: dlg.destroy())
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
     def _pick_target_album(self):
         try:
             DownloadAlbumStructure.pick_album(
@@ -1117,6 +1215,7 @@ class PhotosEditor:
             # Log the first image dict so derivative key names are visible in the console
             if images:
                 logger.info(f"Sample image dict keys: {list(images[0].keys())}")
+                logger.info(f"Sample image dict: { {k: v for k, v in images[0].items() if k not in ('derivatives',)} }")
                 logger.info(f"Sample derivatives: {list(images[0].get('derivatives', {}).keys())}")
 
             verify = params.get("verify_ssl", True)
@@ -2088,6 +2187,21 @@ class PhotosEditor:
         try:
             params = DownloadAlbumStructure.load_params()
             verify = params.get("verify_ssl", True)
+
+            # Fetch full image metadata (includes author, tags, etc.)
+            rich_dict = dict(img_dict)
+            try:
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=verify,
+                    rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                info = client.get_image_info(img_dict["id"])
+                client.logout()
+                rich_dict.update(info)
+            except Exception as e:
+                logger.warning(f"Could not fetch full image info for {img_dict.get('id')}: {e}")
+
             import warnings
             with warnings.catch_warnings():
                 if not verify:
@@ -2095,8 +2209,8 @@ class PhotosEditor:
                 resp = requests.get(url, verify=verify, timeout=30)
                 resp.raise_for_status()
             pil = Image.open(BytesIO(resp.content))
-            pil.load()   # fully decode before leaving the thread
-            self.root.after(0, lambda: self._on_photo_loaded(pil, img_dict))
+            pil.load()
+            self.root.after(0, lambda: self._on_photo_loaded(pil, rich_dict))
         except Exception as e:
             logger.exception(f"Failed to load {url}")
             self.root.after(0, lambda: self.set_status(
@@ -2114,8 +2228,10 @@ class PhotosEditor:
         self.photo_dim_var.set(
             f"{pil.width} \u00d7 {pil.height} px  |  {pil.mode}")
         self._display_photo()
+        self._exif_data = {}   # reset so previous photo's values don't bleed in
         self._load_iptc_from_image(pil)
         self._load_custom_fields(img_dict.get("id"))
+        self._load_piwigo_metadata(img_dict)
         self._validate_date_field()
         self._validate_caption_field()
         self._validate_output_filename_field()
@@ -2127,9 +2243,156 @@ class PhotosEditor:
         self.set_status(f"Loaded: {name}")
 
     def _upload_current_photo(self):
-        """Upload the current photo back to Piwigo (not yet implemented)."""
-        self._refresh_current_thumbnail()
-        self.set_status("Upload to Piwigo: not yet implemented.")
+        """Upload the current (possibly edited) photo back to Piwigo."""
+        if self._viewer_image is None or self._current_image_dict is None:
+            self.set_status("No photo loaded.")
+            return
+        if self.current_album_id is None:
+            messagebox.showerror("No Album", "No source album is selected.", parent=self.root)
+            return
+
+        img_dict = self._current_image_dict
+        image_id = img_dict.get("id")
+        fname    = (self.custom_vars['output_filename'].get().strip()
+                    or img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg")
+
+        # Gather metadata from custom fields
+        author       = self.custom_vars['photo_source'].get().strip()
+        comment      = self.custom_vars['comments'].get('1.0', 'end').strip()
+        raw_tags     = self.custom_vars['tags'].get()
+        tags         = ', '.join(t for t in (t.strip() for t in raw_tags.split(',')) if t)
+        raw_date     = self.custom_vars['date_of_photo'].get().strip()
+        date_creation = ''
+        if raw_date:
+            parsed = self._parse_date(raw_date)
+            if parsed:
+                date_creation = parsed.strftime('%Y-%m-%d %H:%M:%S')
+
+        # Progress dialog
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Uploading…")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        dlg_alive = [True]
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
+
+        ttk.Label(dlg, text=f"Uploading  {fname}",
+                  padding=(16, 12, 16, 4)).pack()
+        ttk.Label(dlg, text=f"to  \"{self.current_album_name}\"",
+                  padding=(16, 0, 16, 8)).pack()
+        pbar = ttk.Progressbar(dlg, mode='indeterminate', length=340)
+        pbar.pack(padx=16, pady=(0, 4))
+        pbar.start(12)
+        stage_var = tk.StringVar(value="Preparing…")
+        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
+                  padding=(16, 0, 16, 12)).pack()
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+        def set_stage(msg):
+            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
+
+        def close_dlg():
+            self.root.after(0, lambda: (pbar.stop(), dlg.destroy())
+                            if dlg_alive[0] else None)
+
+        # Snapshot the edited image now, before the thread starts
+        pil_snapshot = self._viewer_image.copy()
+        album_id     = self.current_album_id
+        image_id     = img_dict.get("id")   # None for brand-new uploads
+
+        def worker():
+            import tempfile as _tmp
+            temp_path = None
+            try:
+                params = DownloadAlbumStructure.load_params()
+
+                # Save edited PIL image to a temp JPEG
+                set_stage("Saving edited image…")
+                stem, ext = os.path.splitext(fname)
+                suffix = ext if ext.lower() in ('.jpg', '.jpeg') else '.jpg'
+                with _tmp.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                    temp_path = tf.name
+                img = pil_snapshot
+                if img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+                max_pixels = params.get('max_upload_pixels')
+                if max_pixels:
+                    w, h = img.size
+                    if w * h > max_pixels:
+                        scale = (max_pixels / (w * h)) ** 0.5
+                        img = img.resize(
+                            (max(1, int(w * scale)), max(1, int(h * scale))),
+                            Image.Resampling.LANCZOS)
+                img.save(temp_path, format='JPEG', quality=92)
+
+                client = DownloadAlbumStructure.PiwigoClient(
+                    params['url'], params['username'], params['password'],
+                    verify_ssl=params.get('verify_ssl', True),
+                    rate_limit_calls_per_second=params.get('rate_limit_calls_per_second', 2.0))
+                set_stage("Logging in…")
+                client.login(params['username'], params['password'])
+                set_stage(f"Uploading {fname}…")
+                result = client.upload_image(
+                    temp_path, album_id,
+                    name=fname, author=author, comment=comment,
+                    tags=tags, date_creation=date_creation,
+                    image_id=image_id)
+                new_image_id = int(result.get('image_id', image_id or 0))
+                if params.get('sync_metadata', True):
+                    set_stage("Syncing metadata…")
+                    try:
+                        client.sync_metadata(new_image_id)
+                    except Exception as e:
+                        logger.warning(f"syncMetadata failed (non-fatal): {e}")
+                # Re-apply author/comment/date after sync_metadata, which may
+                # have overwritten them by re-reading the (un-annotated) file.
+                if author or comment or date_creation:
+                    set_stage("Setting metadata…")
+                    try:
+                        client.set_image_metadata(
+                            new_image_id,
+                            author=author,
+                            comment=comment,
+                            date_creation=date_creation)
+                    except Exception as e:
+                        logger.warning(f"set_image_metadata failed (non-fatal): {e}")
+                if params.get('refresh_representative', True):
+                    set_stage("Refreshing album thumbnail…")
+                    try:
+                        client.refresh_representative(album_id)
+                    except Exception as e:
+                        logger.warning(f"refreshRepresentative failed (non-fatal): {e}")
+                client.logout()
+                set_stage("Done.")
+
+                def finish_ok():
+                    close_dlg()
+                    self._refresh_current_thumbnail()
+                    self.set_status(f"Uploaded: {fname}")
+                self.root.after(0, finish_ok)
+
+            except Exception as e:
+                logger.exception("Upload failed")
+                def finish_err(msg=str(e)):
+                    close_dlg()
+                    messagebox.showerror("Upload Failed", msg, parent=self.root)
+                    self.set_status(f"Upload failed: {msg}")
+                self.root.after(0, finish_err)
+            finally:
+                if temp_path:
+                    try:
+                        Path(temp_path).unlink()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_current_thumbnail(self):
         """Regenerate the left-pane thumbnail from the current editor image."""
@@ -2532,6 +2795,50 @@ class PhotosEditor:
                 self.custom_vars[link['custom_key']].set(value)
             finally:
                 link['syncing'] = False
+
+    def _load_piwigo_metadata(self, img_dict: dict):
+        """Populate custom fields from Piwigo API metadata, but only for fields
+        that _load_iptc_from_image left empty.  IPTC embedded in the file wins."""
+
+        def _set_if_empty(custom_key: str, value: str):
+            if not value:
+                return
+            widget = self.custom_vars.get(custom_key)
+            if widget is None:
+                return
+            persist_var = self.persist_vars.get(custom_key)
+            if persist_var and persist_var.get():
+                return
+            if isinstance(widget, tk.Text):
+                if not widget.get('1.0', 'end').strip():
+                    widget.delete('1.0', 'end')
+                    widget.insert('1.0', value)
+            else:
+                if not widget.get().strip():
+                    widget.set(value)
+
+        # Caption / comment
+        _set_if_empty('comments', (img_dict.get("comment") or "").strip())
+
+        # Photographer / source — Piwigo stores this as 'author'
+        author = (img_dict.get("author") or
+                  img_dict.get("author_name") or
+                  img_dict.get("img_author") or "").strip()
+        _set_if_empty('photo_source', author)
+
+        # Date — Piwigo returns date_creation as 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DD'
+        raw_date = (img_dict.get("date_creation") or "").strip()
+        if raw_date:
+            # Normalise to YYYY:MM:DD so _parse_date and _validate_date_field handle it
+            normalised = raw_date.replace("-", ":", 2).split(" ")[0]  # YYYY:MM:DD
+            _set_if_empty('date_of_photo', normalised)
+
+        # Tags — Piwigo returns a list of tag dicts with 'name' keys
+        raw_tags = img_dict.get("tags", [])
+        if isinstance(raw_tags, list) and raw_tags:
+            tag_str = ", ".join(
+                t.get("name", "") for t in raw_tags if t.get("name"))
+            _set_if_empty('tags', tag_str)
 
     def _load_custom_fields(self, image_id):
         """Populate custom fields from saved data (image_id key), falling back
