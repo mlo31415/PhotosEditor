@@ -1336,6 +1336,7 @@ class PhotosEditor:
         self._selected_ids.clear()
         self._album_images.clear()
         self._drag_batch.clear()
+        self._thumb_canvas.yview_moveto(0)
 
     # -----------------------------------------------------------------------
     # Grid layout
