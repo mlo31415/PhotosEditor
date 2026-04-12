@@ -70,6 +70,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger("PhotosEditor")
 
 # ---------------------------------------------------------------------------
@@ -282,6 +283,8 @@ class PhotosEditor:
         self._target_cell_by_id:    dict        = {}     # image_id → right cell widget
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
+        self._unzoomed_sash:        int | None  = None   # main pane sash saved before zoom
+        self._unzoomed_source_sash: int | None  = None   # source hpane sash (tree width) before zoom
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -346,6 +349,10 @@ class PhotosEditor:
         toolbar = ttk.Frame(self.root, padding=(4, 2))
         toolbar.pack(side="top", fill="x")
 
+        self._zoom_btn = ttk.Button(toolbar, text="Zoom",
+                                    command=self._toggle_zoom)
+        self._zoom_btn.pack(side="left", padx=2)
+
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
 
@@ -358,6 +365,8 @@ class PhotosEditor:
 
         right_frame = self._build_target_panel(self._main_pane)
         self._main_pane.add(right_frame, weight=2)
+
+        self._zoomed: bool = False
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -822,8 +831,10 @@ class PhotosEditor:
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             state["editor_geometry"] = self._editor_dlg.geometry()
         state["geometry"] = self.root.geometry()
+        # Always save the unzoomed sash position
         try:
-            state["sash"] = self._main_pane.sashpos(0)
+            state["sash"] = (self._unzoomed_sash if self._zoomed
+                             else self._main_pane.sashpos(0))
         except Exception:
             pass
         if self.current_album_id is not None:
@@ -842,6 +853,42 @@ class PhotosEditor:
         self._load_album_photos()
         if self.target_album_id is not None:
             self._load_target_album_photos()
+
+    def _toggle_zoom(self):
+        if self._zoomed:
+            # Re-add right panel, force layout, restore main sash and tree width
+            self._main_pane.add(self._target_frame, weight=2)
+            self._main_pane.update()
+            if self._unzoomed_sash is not None:
+                self._set_main_sash(self._unzoomed_sash)
+            # Restore the source tree to its pre-zoom width
+            if self._unzoomed_source_sash is not None:
+                self._source_hpane.update()
+                try:
+                    self._source_hpane.sashpos(0, self._unzoomed_source_sash)
+                except Exception:
+                    pass
+            self._zoom_btn.config(text="Zoom")
+            self._zoomed = False
+        else:
+            # Save main sash and source tree width, then hide right panel
+            try:
+                self._unzoomed_sash = self._main_pane.sashpos(0)
+            except Exception:
+                self._unzoomed_sash = None
+            try:
+                self._unzoomed_source_sash = self._source_hpane.sashpos(0)
+            except Exception:
+                self._unzoomed_source_sash = None
+            self._main_pane.forget(self._target_frame)
+            # Keep source tree the same width; thumbnails absorb all extra space
+            self._source_hpane.update()
+            try:
+                self._source_hpane.sashpos(0, self._unzoomed_source_sash)
+            except Exception:
+                pass
+            self._zoom_btn.config(text="Unzoom")
+            self._zoomed = True
 
     # -----------------------------------------------------------------------
     # Status
