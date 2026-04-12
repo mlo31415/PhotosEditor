@@ -559,9 +559,12 @@ class PhotosEditor:
         left_col = ttk.Frame(viewer_frame)
         left_col.pack(side="left", fill="y", padx=(0, 6))
 
-        ttk.Label(left_col, textvariable=self.photo_label_var,
-                  font=("TkDefaultFont", 9, "italic"),
-                  anchor="w").pack(fill="x", pady=(0, 2))
+        _bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
+        tk.Entry(left_col, textvariable=self.photo_label_var,
+                 font=("TkDefaultFont", 9, "italic"),
+                 state="readonly", relief="flat", bd=0,
+                 highlightthickness=0,
+                 readonlybackground=_bg).pack(fill="x", pady=(0, 2))
 
         ttk.Label(left_col, textvariable=self.photo_dim_var,
                   anchor="w").pack(fill="x", pady=(0, 6))
