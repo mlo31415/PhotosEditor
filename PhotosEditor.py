@@ -261,9 +261,10 @@ class PhotosEditor:
         self.target_album_id:   int | None = None
         self.target_album_name: str        = ""
         self._target_album_images: list[dict] = []
-        self._target_thumb_cache:  dict       = {}
-        self._target_thumb_tk:     dict       = {}
-        self._target_thumb_cells:  list       = []
+        self._target_thumb_cache:      dict       = {}
+        self._target_thumb_tk:         dict       = {}
+        self._target_thumb_cells:      list       = []
+        self._target_thumb_img_labels: dict       = {}   # image_id → tk.Label
         self._tree_all_items:       list = []
         self._tree_fullname_by_iid: dict = {}
         self._source_tree_all_items:       list = []
@@ -495,6 +496,8 @@ class PhotosEditor:
         _save_state(self._state)
         self._editor_dlg.grab_release()
         self._editor_dlg.withdraw()
+        # Refresh the thumbnail in whichever grid it came from.
+        self._refresh_current_thumbnail()
 
     def _build_editor_dialog_content(self, dlg: tk.Toplevel):
         """Populate the editor Toplevel with all editor widgets."""
@@ -537,6 +540,7 @@ class PhotosEditor:
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>",        self._on_canvas_resize)
         self.canvas.bind("<Control-Button-1>", self._open_caption_editor)
+        self.canvas.bind("<Double-Button-1>",  self._open_caption_editor)
         self.canvas.bind("<Button-1>",         self._on_crop_start)
         self.canvas.bind("<B1-Motion>",        self._on_crop_drag)
         self.canvas.bind("<ButtonRelease-1>",  self._on_crop_release)
@@ -608,7 +612,7 @@ class PhotosEditor:
         tools_frame = ttk.LabelFrame(lower_frame, text="Editing Tools", padding=6)
         tools_frame.pack(fill="x", pady=(4, 0))
 
-        # Row 1 – Rotate
+        # Single row – Rotate | Crop | Undo
         row1 = ttk.Frame(tools_frame)
         row1.pack(fill="x", pady=(0, 4))
         ttk.Label(row1, text="Rotate:").pack(side="left", padx=(0, 6))
@@ -621,13 +625,11 @@ class PhotosEditor:
         self.rotate_180_btn = ttk.Button(row1, text="↷ 180°",
                    command=lambda: self._rotate_photo(180), state="disabled")
         self.rotate_180_btn.pack(side="left", padx=2)
-
-        # Row 2 – Crop / Undo
-        row2 = ttk.Frame(tools_frame)
-        row2.pack(fill="x", pady=(0, 4))
-        self.crop_btn = ttk.Button(row2, text="Crop", command=self._crop_photo)
+        ttk.Label(row1, text="").pack(side="left", padx=16)   # spacer
+        self.crop_btn = ttk.Button(row1, text="Crop", command=self._crop_photo)
         self.crop_btn.pack(side="left", padx=2)
-        self.undo_btn = ttk.Button(row2, text="Undo", command=self._undo_edit,
+        ttk.Label(row1, text="").pack(side="left", padx=16)   # spacer
+        self.undo_btn = ttk.Button(row1, text="Undo", command=self._undo_edit,
                                    state="disabled")
         self.undo_btn.pack(side="left", padx=2)
 
@@ -1530,6 +1532,7 @@ class PhotosEditor:
         self._target_cell_by_id[image_id] = cell
         img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
         img_lbl.pack()
+        self._target_thumb_img_labels[image_id] = img_lbl
         name_lbl = tk.Label(cell, text=_truncate(name, 20),
                             bg="#3a3a3a", fg="#dddddd",
                             font=("TkDefaultFont", 8), anchor="center",
@@ -1577,6 +1580,7 @@ class PhotosEditor:
         self._target_thumb_cells.clear()
         self._target_thumb_cache.clear()
         self._target_thumb_tk.clear()
+        self._target_thumb_img_labels.clear()
         self._target_cell_by_id.clear()
         self._target_selected_ids.clear()
         self._target_album_images.clear()
@@ -2437,23 +2441,29 @@ class PhotosEditor:
         threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_current_thumbnail(self):
-        """Regenerate the left-pane thumbnail from the current editor image."""
+        """Regenerate thumbnails in both grids from the current editor image."""
         if self._viewer_image is None or self._current_image_dict is None:
             return
         image_id = self._current_image_dict.get("id")
         if image_id is None:
             return
-        img_lbl = self._thumb_img_labels.get(image_id)
-        if img_lbl is None:
-            return
         pil = self._viewer_image.copy()
         if pil.mode not in ("RGB", "RGBA"):
             pil = pil.convert("RGB")
         pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
-        self._thumb_cache[image_id] = pil
         tk_img = ImageTk.PhotoImage(pil)
-        self._thumb_tk[image_id] = tk_img   # keep reference to prevent GC
-        img_lbl.configure(image=tk_img)
+        # Left (source) grid
+        img_lbl = self._thumb_img_labels.get(image_id)
+        if img_lbl is not None:
+            self._thumb_cache[image_id] = pil
+            self._thumb_tk[image_id] = tk_img
+            img_lbl.configure(image=tk_img)
+        # Right (target) grid
+        target_lbl = self._target_thumb_img_labels.get(image_id)
+        if target_lbl is not None:
+            self._target_thumb_cache[image_id] = pil
+            self._target_thumb_tk[image_id] = tk_img
+            target_lbl.configure(image=tk_img)
 
     def _revert_photo(self):
         """Reload the current photo from Piwigo, discarding unsaved edits."""
@@ -2700,14 +2710,15 @@ class PhotosEditor:
             return
         self._caption_editor_open = True
 
-        win = tk.Toplevel(self.root)
+        parent = self._editor_dlg if (self._editor_dlg and
+                                       self._editor_dlg.winfo_exists()) else self.root
+        win = tk.Toplevel(parent)
         name = (self._current_image_dict or {}).get("name") or \
                (self._current_image_dict or {}).get("file", "")
         win.title("Caption Editor")
         win.resizable(True, True)
+        win.transient(parent)
         win.lift()
-        win.attributes("-topmost", True)
-        win.after(100, lambda: win.attributes("-topmost", False))
 
         # Selectable filename heading
         heading_var = tk.StringVar(value=name)
@@ -2755,18 +2766,16 @@ class PhotosEditor:
             self._caption_editor_open = False
             win.destroy()
 
-        # Click on photo to commit
+        # Click on photo or close window to commit
         photo_canvas.bind("<Button-1>", _commit_and_close)
-        win.protocol("WM_DELETE_WINDOW",
-                     lambda: (setattr(self, "_caption_editor_open", False),
-                              win.destroy()))
+        win.protocol("WM_DELETE_WINDOW", _commit_and_close)
 
-        # Size to 75% of main window, centred over it
-        self.root.update_idletasks()
-        rw = self.root.winfo_width()
-        rh = self.root.winfo_height()
-        rx = self.root.winfo_rootx()
-        ry = self.root.winfo_rooty()
+        # Size to 75% of the editor dialog, centred over it
+        parent.update_idletasks()
+        rw = parent.winfo_width()
+        rh = parent.winfo_height()
+        rx = parent.winfo_rootx()
+        ry = parent.winfo_rooty()
         pw = max(500, int(rw * 0.75))
         ph = max(400, int(rh * 0.75))
         win.geometry(f"{pw}x{ph}+{rx + (rw - pw) // 2}+{ry + (rh - ph) // 2}")
