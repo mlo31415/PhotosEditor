@@ -153,47 +153,83 @@ def _save_state(state: dict) -> None:
 
 
 class _Tooltip:
-    """Hover tooltip for one or more tkinter widgets."""
+    """Hover tooltip that treats multiple widgets as one hover region.
+
+    On Leave, uses the event's x_root/y_root (the position at the moment the
+    mouse left) to check whether it moved to another widget in the group.
+    This avoids async timing issues with after()-based coordinate polling.
+    """
 
     def __init__(self, text_fn):
-        """text_fn() -> str  called just before the tip is shown."""
         self._text_fn  = text_fn
         self._tip      = None
         self._after_id = None
         self._widgets  = []
+        self._root     = None
 
     def attach(self, widget):
+        if not self._widgets:
+            self._root = widget
         self._widgets.append(widget)
-        widget.bind("<Enter>",       self._schedule, add="+")
-        widget.bind("<Leave>",       self._cancel_and_hide, add="+")
+        widget.bind("<Enter>",       self._on_enter,       add="+")
+        widget.bind("<Leave>",       self._on_leave,       add="+")
         widget.bind("<ButtonPress>", self._cancel_and_hide, add="+")
 
-    def _schedule(self, _event=None):
-        self._cancel()
-        w = self._widgets[0] if self._widgets else None
-        if w:
-            self._after_id = w.after(500, self._show)
+    def _coords_inside_group(self, wx: int, wy: int) -> bool:
+        """Return True if screen point (wx, wy) falls inside any attached widget."""
+        for w in self._widgets:
+            try:
+                x  = w.winfo_rootx()
+                y  = w.winfo_rooty()
+                if x <= wx < x + w.winfo_width() and y <= wy < y + w.winfo_height():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _on_enter(self, _event=None):
+        if self._after_id is None:
+            if self._root:
+                self._after_id = self._root.after(500, self._show)
+
+    def _on_leave(self, event=None):
+        # Use the Leave event's own coordinates — they reflect where the mouse
+        # was at the instant it left, so no async delay is needed.
+        if event is not None:
+            try:
+                if self._coords_inside_group(event.x_root, event.y_root):
+                    return   # moved to a sibling widget in the group
+            except Exception:
+                pass
+        self._cancel_and_hide()
 
     def _cancel(self):
-        if self._after_id and self._widgets:
-            self._widgets[0].after_cancel(self._after_id)
+        if self._after_id and self._root:
+            try:
+                self._root.after_cancel(self._after_id)
+            except Exception:
+                pass
             self._after_id = None
 
     def _cancel_and_hide(self, _event=None):
         self._cancel()
         if self._tip:
-            self._tip.destroy()
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
             self._tip = None
 
     def _show(self):
+        self._after_id = None
         text = self._text_fn()
         if not text:
             return
-        if self._widgets:
-            x, y = self._widgets[0].winfo_pointerxy()
-        else:
+        try:
+            x, y = self._root.winfo_pointerxy()
+        except Exception:
             return
-        self._tip = tk.Toplevel(self._widgets[0])
+        self._tip = tk.Toplevel(self._root)
         self._tip.wm_overrideredirect(True)
         self._tip.wm_geometry(f"+{x + 14}+{y + 14}")
         tk.Label(self._tip, text=text, justify="left",
@@ -1377,12 +1413,12 @@ class PhotosEditor:
         name_lbl.pack(fill="x")
 
         # Tooltip: filename + caption
-        def _tip_text(d=img_dict):
+        def _tip_text(d=img_dict, iid=image_id):
             parts = []
-            fname = d.get("file", "").strip()
+            fname = (d.get("file") or d.get("name") or f"#{iid}").strip()
             if fname:
                 parts.append(fname)
-            caption = d.get("comment", "").strip()
+            caption = (d.get("comment") or "").strip()
             if caption:
                 parts.append(f"Caption: {caption}")
             return "\n".join(parts)
@@ -1586,11 +1622,11 @@ class PhotosEditor:
                             wraplength=self._thumb_size[0])
         name_lbl.pack(fill="x")
 
-        def _tip_text(d=img_dict):
+        def _tip_text(d=img_dict, iid=image_id):
             parts = []
-            fname = d.get("file", "").strip()
+            fname = (d.get("file") or d.get("name") or f"#{iid}").strip()
             if fname: parts.append(fname)
-            caption = d.get("comment", "").strip()
+            caption = (d.get("comment") or "").strip()
             if caption: parts.append(f"Caption: {caption}")
             return "\n".join(parts)
 
