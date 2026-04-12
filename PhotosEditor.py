@@ -79,7 +79,6 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff',
                     '.tif', '.webp', '.heic', '.heif'}
 
 CUSTOM_FIELDS = [
-    ('output_filename', 'Filename'),
     ('photo_source',    'Photographer/Source'),
     ('date_of_photo',   'Date of Photo'),
     ('comments',        'Caption'),
@@ -247,6 +246,11 @@ class PhotosEditor:
         # ── album / thumbnail state ─────────────────────────────────────────
         self.current_album_id:   int | None = None
         self.current_album_name: str        = ""
+        # Saved IDs from previous session (consumed by _populate_*_hierarchy_tree)
+        self._saved_album_id:          int | None = None
+        self._saved_album_name:        str        = ""
+        self._saved_target_album_id:   int | None = None
+        self._saved_target_album_name: str        = ""
         self._album_images:      list[dict] = []
         self._thumb_cache:       dict       = {}   # image_id → PIL Image
         self._thumb_tk:          dict       = {}   # image_id → PhotoImage (GC anchor)
@@ -260,23 +264,23 @@ class PhotosEditor:
         self._target_thumb_cache:  dict       = {}
         self._target_thumb_tk:     dict       = {}
         self._target_thumb_cells:  list       = []
-        self._mode: str = 'editor'   # 'editor' | 'move'
         self._tree_all_items:       list = []
         self._tree_fullname_by_iid: dict = {}
         self._source_tree_all_items:       list = []
         self._source_tree_fullname_by_iid: dict = {}
 
         # ── drag-and-drop / selection state ─────────────────────────────────
-        self._drag_batch:       list        = []     # list of img_dict being dragged
-        self._drag_is_copy:     bool        = False
-        self._drag_source_side: str         = 'left' # 'left' | 'right'
-        self._drag_window:      tk.Toplevel | None = None
-        self._press_pos:        tuple | None = None
-        self._selected_ids:     set         = set()  # selected image ids (left grid)
-        self._target_selected_ids: set      = set()  # selected image ids (right grid)
-        self._cell_by_id:       dict        = {}     # image_id → left cell widget
-        self._target_cell_by_id: dict       = {}     # image_id → right cell widget
-        self._move_undo_stack:  list        = []     # undo records for drag-and-drop ops
+        self._drag_batch:           list        = []     # list of img_dict being dragged
+        self._drag_is_copy:         bool        = False
+        self._drag_source_side:     str         = 'left' # 'left' | 'right'
+        self._drag_window:          tk.Toplevel | None = None
+        self._press_pos:            tuple | None = None
+        self._selected_ids:         set         = set()  # selected image ids (left grid)
+        self._target_selected_ids:  set         = set()  # selected image ids (right grid)
+        self._cell_by_id:           dict        = {}     # image_id → left cell widget
+        self._target_cell_by_id:    dict        = {}     # image_id → right cell widget
+        self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
+        self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -315,12 +319,11 @@ class PhotosEditor:
         self._restore_red_var      = tk.DoubleVar(value=0.0)
         self._restore_sharpen_var  = tk.DoubleVar(value=0.0)
 
+        # ── editor dialog (built lazily on first double-click) ───────────────
+        self._editor_dlg: tk.Toplevel | None = None
+
         self._build_ui()
         self._restore_state()
-        # Start fields pink (empty = invalid), same as PhotosUploader
-        self._validate_caption_field()
-        self._validate_date_field()
-        self._validate_output_filename_field()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", self._on_f5_refresh)
@@ -342,9 +345,6 @@ class PhotosEditor:
         toolbar = ttk.Frame(self.root, padding=(4, 2))
         toolbar.pack(side="top", fill="x")
 
-        self._mode_btn = ttk.Button(toolbar, text="Switch to Photo Move Mode",
-                                    command=self._toggle_mode)
-        self._mode_btn.pack(side="left", padx=2)
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
 
@@ -355,12 +355,8 @@ class PhotosEditor:
         left_frame = self._build_thumb_panel(self._main_pane)
         self._main_pane.add(left_frame, weight=2)
 
-        right_container = ttk.Frame(self._main_pane)
-        self._main_pane.add(right_container, weight=3)
-
-        self._editor_frame = self._build_editor_panel(right_container)
-        self._target_frame = self._build_target_panel(right_container)
-        self._editor_frame.pack(fill="both", expand=True)
+        right_frame = self._build_target_panel(self._main_pane)
+        self._main_pane.add(right_frame, weight=2)
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -454,12 +450,56 @@ class PhotosEditor:
 
         return frame
 
-    # ── right panel: photo editor (mirrors PhotosUploader center panel) ──────
-    def _build_editor_panel(self, parent) -> ttk.Frame:
-        frame = ttk.Frame(parent)
+    # ── Editor dialog: opened on double-click of any thumbnail ─────────────
+    def _open_editor_dialog(self, img_dict: dict):
+        """Open (or bring forward) the photo-editor dialog and load img_dict."""
+        dlg_alive = (self._editor_dlg is not None and
+                     self._editor_dlg.winfo_exists())
+        if not dlg_alive:
+            self._editor_dlg = tk.Toplevel(self.root)
+            self._editor_dlg.title("Photo Editor")
+            self._editor_dlg.minsize(600, 400)
+            self._editor_dlg.transient(self.root)   # always on top of main window
+            self._build_editor_dialog_content(self._editor_dlg)
+            saved_geo = self._state.get("editor_geometry", "")
+            if saved_geo:
+                try:
+                    self._editor_dlg.geometry(saved_geo)
+                except Exception:
+                    saved_geo = ""
+            if not saved_geo:
+                # No saved size: fit all controls up to the screen limit.
+                self._editor_dlg.update_idletasks()
+                req_w = self._editor_dlg.winfo_reqwidth()
+                req_h = self._editor_dlg.winfo_reqheight()
+                scr_w = self._editor_dlg.winfo_screenwidth()
+                scr_h = self._editor_dlg.winfo_screenheight()
+                dlg_w = min(max(req_w, 900), scr_w - 40)
+                dlg_h = min(max(req_h, 700), scr_h - 80)
+                # Centre on screen
+                x = (scr_w - dlg_w) // 2
+                y = (scr_h - dlg_h) // 2
+                self._editor_dlg.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
+            self._editor_dlg.protocol("WM_DELETE_WINDOW", self._close_editor_dialog)
+            self._editor_dlg.bind("<Control-z>", lambda e: self._undo_edit())
+        else:
+            self._editor_dlg.deiconify()
+            self._clear_editor()   # wipe previous image before new one loads
+        self._editor_dlg.lift()
+        self._editor_dlg.grab_set()
+        self._on_thumb_click(img_dict)
 
+    def _close_editor_dialog(self):
+        # Persist the dialog's current geometry so it reopens in the same spot.
+        self._state["editor_geometry"] = self._editor_dlg.geometry()
+        _save_state(self._state)
+        self._editor_dlg.grab_release()
+        self._editor_dlg.withdraw()
+
+    def _build_editor_dialog_content(self, dlg: tk.Toplevel):
+        """Populate the editor Toplevel with all editor widgets."""
         # Vertical pane: photo viewer (top) / custom fields (bottom)
-        vpane = ttk.PanedWindow(frame, orient="vertical")
+        vpane = ttk.PanedWindow(dlg, orient="vertical")
         vpane.pack(fill="both", expand=True)
         self._editor_vpane = vpane
 
@@ -488,36 +528,19 @@ class PhotosEditor:
             url_label.configure(wraplength=max(event.width - 4, 50))
         url_label.bind("<Configure>", _update_url_wraplength)
 
-        # Right column: canvas + upload button below it
+        # Right column: canvas
         right_col = ttk.Frame(viewer_frame)
         right_col.pack(side="left", fill="both", expand=True)
 
         self.canvas = tk.Canvas(right_col, bg="#1a1a1a", cursor="crosshair",
                                 height=200)
         self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>",       self._on_canvas_resize)
+        self.canvas.bind("<Configure>",        self._on_canvas_resize)
         self.canvas.bind("<Control-Button-1>", self._open_caption_editor)
         self.canvas.bind("<Button-1>",         self._on_crop_start)
         self.canvas.bind("<B1-Motion>",        self._on_crop_drag)
         self.canvas.bind("<ButtonRelease-1>",  self._on_crop_release)
         self.canvas.bind("<Escape>",           self._clear_crop_rect)
-
-        btn_row = ttk.Frame(right_col)
-        btn_row.pack(pady=(4, 0))
-
-        self.upload_photo_btn = tk.Button(
-            btn_row, text="⬆ Upload to Piwigo",
-            command=self._upload_current_photo,
-            background="#add8e6",
-            font=("TkDefaultFont", 10, "bold"),
-            state="disabled")
-        self.upload_photo_btn.pack(side="left", padx=(0, 4))
-
-        self.revert_btn = ttk.Button(
-            btn_row, text="↺ Revert",
-            command=self._revert_photo,
-            state="disabled")
-        self.revert_btn.pack(side="left")
 
         def _enforce_canvas_min_width(event):
             min_w = int(event.width * 0.60)
@@ -541,11 +564,10 @@ class PhotosEditor:
             ttk.Label(custom_frame, text=label + ":", width=22, anchor="e").grid(
                 row=row, column=0, sticky="e", pady=2, padx=(0, 4))
 
-            if key != 'output_filename':
-                persist_var = tk.BooleanVar(value=False)
-                ttk.Checkbutton(custom_frame, variable=persist_var).grid(
-                    row=row, column=1, sticky="w", padx=4, pady=2)
-                self.persist_vars[key] = persist_var
+            persist_var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(custom_frame, variable=persist_var).grid(
+                row=row, column=1, sticky="w", padx=4, pady=2)
+            self.persist_vars[key] = persist_var
 
             if key == 'comments':
                 txt = tk.Text(custom_frame, height=3, width=40, wrap="word",
@@ -557,25 +579,14 @@ class PhotosEditor:
                 if key == 'date_of_photo':
                     entry = tk.Entry(custom_frame, textvariable=var, width=40)
                     self.date_entry = entry
-                elif key == 'output_filename':
-                    entry = tk.Entry(custom_frame, textvariable=var, width=40,
-                                     state="readonly",
-                                     readonlybackground=self.root.cget("background"),
-                                     relief="flat", cursor="arrow")
-                    self.output_filename_entry = entry
-                    def _show_filename_menu(event, _entry=entry):
-                        menu = tk.Menu(_entry, tearoff=0)
-                        menu.add_command(label="Copy to Caption",
-                                         command=self._copy_filename_to_caption)
-                        menu.tk_popup(event.x_root, event.y_root)
-                    entry.bind("<Button-3>", _show_filename_menu)
                 else:
                     entry = ttk.Entry(custom_frame, textvariable=var, width=40)
                 entry.grid(row=row, column=2, sticky="ew", pady=2)
                 self.custom_vars[key] = var
         custom_frame.columnconfigure(2, weight=1)
 
-        # ── Bidirectional field links (mirrors PhotosUploader) ────────────────
+        # ── Bidirectional field links ─────────────────────────────────────────
+        self._field_links = []   # reset before registering
         self._register_field_link(
             custom_key='photo_source', exif_key='Artist',
             iptc_tag=(2, 80), validate_fn=None)
@@ -584,8 +595,6 @@ class PhotosEditor:
             iptc_tag=(2, 55), validate_fn=self._parse_date)
         self.custom_vars['date_of_photo'].trace_add(
             'write', lambda *_: self._validate_date_field())
-        self.custom_vars['output_filename'].trace_add(
-            'write', lambda *_: self._validate_output_filename_field())
         self._register_field_link(
             custom_key='tags', exif_key=None,
             iptc_tag=(2, 25), validate_fn=None)
@@ -595,7 +604,7 @@ class PhotosEditor:
             self.custom_vars['comments'].edit_modified(False)
         self.custom_vars['comments'].bind('<<Modified>>', _on_comments_changed)
 
-        # ── Editing Tools — packed directly below Custom Fields ───────────────
+        # ── Editing Tools ─────────────────────────────────────────────────────
         tools_frame = ttk.LabelFrame(lower_frame, text="Editing Tools", padding=6)
         tools_frame.pack(fill="x", pady=(4, 0))
 
@@ -622,11 +631,16 @@ class PhotosEditor:
                                    state="disabled")
         self.undo_btn.pack(side="left", padx=2)
 
-        self.root.after(100, self._set_initial_sash_positions)
-
         # ── Photo Restoration ─────────────────────────────────────────────────
         restore_frame = ttk.LabelFrame(lower_frame, text="Photo Restoration", padding=6)
         restore_frame.pack(fill="x", pady=(4, 0))
+
+        # Left column: sliders  |  Right column: buttons
+        sliders_col = ttk.Frame(restore_frame)
+        sliders_col.pack(side="left", fill="x", expand=True)
+
+        btns_col = ttk.Frame(restore_frame)
+        btns_col.pack(side="left", fill="y", padx=(8, 0))
 
         _restore_sliders = [
             ("Exposure",  self._restore_exposure_var, -100, 100),
@@ -636,13 +650,13 @@ class PhotosEditor:
         ]
         self._restore_val_vars = {}
         for label, dvar, lo, hi in _restore_sliders:
-            row = ttk.Frame(restore_frame)
+            row = ttk.Frame(sliders_col)
             row.pack(fill="x", pady=1)
-            ttk.Label(row, text=f"{label}:", width=10, anchor="e").pack(
+            ttk.Label(row, text=f"{label}:", width=9, anchor="e").pack(
                 side="left", padx=(0, 4))
             val_var = tk.StringVar(value="0")
             self._restore_val_vars[label] = val_var
-            ttk.Label(row, textvariable=val_var, width=5,
+            ttk.Label(row, textvariable=val_var, width=4,
                       anchor="e").pack(side="right")
             def _cmd(v, vv=val_var, dv=dvar):
                 vv.set(str(int(float(v))))
@@ -651,19 +665,33 @@ class PhotosEditor:
                       variable=dvar, command=_cmd).pack(
                           side="left", fill="x", expand=True)
 
-        btn_row = ttk.Frame(restore_frame)
-        btn_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(btn_row,
-                  text="(requires opencv-python)" if not CV2_AVAILABLE else "",
-                  foreground="red").pack(side="left")
-        ttk.Button(btn_row, text="Revert Restoration",
-                   command=self._reset_restoration).pack(side="right")
+        if not CV2_AVAILABLE:
+            ttk.Label(btns_col, text="(requires\nopencv-python)",
+                      foreground="red", justify="center").pack(pady=(0, 4))
+        ttk.Button(btns_col, text="Revert\nRestoration",
+                   command=self._reset_restoration).pack()
 
-        return frame
+        # ── Dialog action buttons (Upload / Close) ────────────────────────────
+        action_bar = ttk.Frame(dlg, padding=(8, 4))
+        action_bar.pack(fill="x")
+
+        self.upload_photo_btn = tk.Button(
+            action_bar, text="⬆ Upload to Piwigo",
+            command=self._upload_current_photo,
+            background="#add8e6",
+            font=("TkDefaultFont", 10, "bold"),
+            state="disabled")
+        self.upload_photo_btn.pack(side="left", padx=(0, 8))
+
+        ttk.Button(action_bar, text="Close",
+                   command=self._close_editor_dialog).pack(side="left")
+
+        dlg.after(100, self._set_initial_sash_positions)
 
     # ── right panel: target album (Photo Move Mode) ──────────────────────────
     def _build_target_panel(self, parent) -> ttk.Frame:
         frame = ttk.Frame(parent)
+        self._target_frame = frame
 
         # ── Horizontal pane: album tree (left) | thumbnail grid (right) ──────
         hpane = ttk.PanedWindow(frame, orient="horizontal")
@@ -758,20 +786,19 @@ class PhotosEditor:
         sash = self._state.get("sash", None)
         if sash is not None:
             self.root.after(200, lambda: self._set_main_sash(sash))
+        # Stash saved album IDs so tree-population methods can restore them.
+        # Do NOT load photos here — _populate_*_hierarchy_tree() will trigger
+        # the load after confirming the album still exists in the hierarchy.
         album_id   = self._state.get("album_id",   None)
         album_name = self._state.get("album_name", "")
         if album_id is not None:
-            self.current_album_id   = album_id
-            self.current_album_name = album_name
-            self.album_var.set(album_name or "(none)")
-            self.root.after(300, self._load_album_photos)
+            self._saved_album_id   = album_id
+            self._saved_album_name = album_name
         target_id   = self._state.get("target_album_id",   None)
         target_name = self._state.get("target_album_name", "")
         if target_id is not None:
-            self.target_album_id   = target_id
-            self.target_album_name = target_name
-            self.target_album_var.set(target_name or "(none)")
-            self.root.after(300, self._load_target_album_photos)
+            self._saved_target_album_id   = target_id
+            self._saved_target_album_name = target_name
 
     def _set_main_sash(self, pos: int):
         try:
@@ -788,8 +815,10 @@ class PhotosEditor:
         self._editor_vpane.sashpos(0, round(total * 13 / 30))
 
     def _on_close(self):
-        self._save_current_custom_fields()
-        state: dict = {}
+        state: dict = dict(self._state)   # preserve keys like editor_geometry
+        # Capture editor dialog size/position even if closed via app exit
+        if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
+            state["editor_geometry"] = self._editor_dlg.geometry()
         state["geometry"] = self.root.geometry()
         try:
             state["sash"] = self._main_pane.sashpos(0)
@@ -804,28 +833,10 @@ class PhotosEditor:
         _save_state(state)
         self.root.destroy()
 
-    def _toggle_mode(self):
-        self._clear_selection()
-        if self._mode == 'editor':
-            self._mode = 'move'
-            self._editor_frame.pack_forget()
-            self._target_frame.pack(fill="both", expand=True)
-            self._mode_btn.config(text="Switch to Photo Editor Mode")
-        else:
-            self._mode = 'editor'
-            self._target_frame.pack_forget()
-            self._editor_frame.pack(fill="both", expand=True)
-            self._mode_btn.config(text="Switch to Photo Move Mode")
-
     def _on_ctrl_z(self, _event=None):
-        if self._mode == 'move':
-            self._undo_drag_drop()
-        else:
-            self._undo_edit()
+        self._undo_drag_drop()
 
     def _on_f5_refresh(self, _event=None):
-        if self._mode != 'move':
-            return
         self._load_album_photos()
         if self.target_album_id is not None:
             self._load_target_album_photos()
@@ -923,7 +934,21 @@ class PhotosEditor:
 
         _populate("", hierarchy, top_level=True)
 
-        # Re-select current source album if one is set
+        # On first population, restore the saved album from the previous session.
+        if self._saved_album_id is not None:
+            iid = str(self._saved_album_id)
+            self._saved_album_id = None   # consume so it isn't re-applied on refresh
+            if tree.exists(iid):
+                self.current_album_id   = int(iid)
+                self.current_album_name = self._saved_album_name
+                self.album_var.set(self._saved_album_name or "(none)")
+                tree.selection_set(iid)
+                tree.see(iid)
+                self.root.after(0, self._load_album_photos)
+            # else: album was deleted — stay at default (no album selected)
+            return
+
+        # Re-select current source album on subsequent refreshes.
         if self.current_album_id is not None:
             iid = str(self.current_album_id)
             if tree.exists(iid):
@@ -986,7 +1011,21 @@ class PhotosEditor:
 
         _populate("", hierarchy, top_level=True)
 
-        # Re-select current target album if one is set
+        # On first population, restore the saved target album from the previous session.
+        if self._saved_target_album_id is not None:
+            iid = str(self._saved_target_album_id)
+            self._saved_target_album_id = None   # consume
+            if tree.exists(iid):
+                self.target_album_id   = int(iid)
+                self.target_album_name = self._saved_target_album_name
+                self.target_album_var.set(self._saved_target_album_name or "(none)")
+                tree.selection_set(iid)
+                tree.see(iid)
+                self.root.after(0, self._load_target_album_photos)
+            # else: album was deleted — stay at default
+            return
+
+        # Re-select current target album on subsequent refreshes.
         if self.target_album_id is not None:
             iid = str(self.target_album_id)
             if tree.exists(iid):
@@ -1316,6 +1355,7 @@ class PhotosEditor:
             w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_cell_press(e, d, c, 'left'))
             w.bind("<B1-Motion>",       lambda e, d=img_dict, c=cell: self._on_cell_motion(e, d, c, 'left'))
             w.bind("<ButtonRelease-1>", lambda e, d=img_dict, c=cell: self._on_cell_release(e, d, c, 'left'))
+            w.bind("<Double-Button-1>", lambda e, d=img_dict: self._on_cell_double(d))
             w.bind("<Enter>",           lambda e, iid=image_id, c=cell: self._on_source_enter(iid, c))
             w.bind("<Leave>",           lambda e, iid=image_id, c=cell: self._on_source_leave(iid, c))
             w.bind("<Button-3>",        _show_left_menu)
@@ -1521,6 +1561,7 @@ class PhotosEditor:
             w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_cell_press(e, d, c, 'right'))
             w.bind("<B1-Motion>",       lambda e, d=img_dict, c=cell: self._on_cell_motion(e, d, c, 'right'))
             w.bind("<ButtonRelease-1>", lambda e, d=img_dict, c=cell: self._on_cell_release(e, d, c, 'right'))
+            w.bind("<Double-Button-1>", lambda e, d=img_dict: self._on_cell_double(d))
             w.bind("<Enter>",           lambda e, c=cell, iid=image_id: self._on_target_enter(iid, c))
             w.bind("<Leave>",           lambda e, c=cell, iid=image_id: self._on_target_leave(iid, c))
             w.bind("<Button-3>",        _show_right_menu)
@@ -1574,7 +1615,7 @@ class PhotosEditor:
         self._drag_batch = []
 
     def _on_cell_motion(self, event, img_dict: dict, cell: tk.Frame, side: str):
-        if self._mode != 'move' or self._press_pos is None:
+        if self._press_pos is None:
             return
         dx = abs(event.x_root - self._press_pos[0])
         dy = abs(event.y_root - self._press_pos[1])
@@ -1595,10 +1636,15 @@ class PhotosEditor:
 
         if was_drag:
             self._execute_drop(event)
-        elif self._mode == 'move':
+        elif self._double_click_pending:
+            self._double_click_pending = False   # swallow the spurious 2nd release
+        else:
             self._toggle_side_selection(img_dict.get("id"), cell, side)
-        elif side == 'left':
-            self._on_thumb_click(img_dict)
+
+    def _on_cell_double(self, img_dict: dict):
+        """Open the photo editor dialog on double-click."""
+        self._double_click_pending = True
+        self._open_editor_dialog(img_dict)
 
     def _start_drag(self, event, img_dict: dict, side: str):
         self._drag_is_copy = self._ctrl_held
@@ -1645,8 +1691,7 @@ class PhotosEditor:
 
     def _execute_drop(self, event):
         """Called after drag ends; detects destination and executes immediately."""
-        if not self._drag_batch or self._mode != 'move':
-            self._drag_batch = []
+        if not self._drag_batch:
             return
 
         src_side     = self._drag_source_side
@@ -1718,11 +1763,10 @@ class PhotosEditor:
 
     def _on_grid_drop(self, event, side: str):
         """ButtonRelease-1 on empty canvas area — clear selection for that side."""
-        if self._mode == 'move':
-            if side == 'left':
-                self._clear_side_selection('left')
-            else:
-                self._clear_side_selection('right')
+        if side == 'left':
+            self._clear_side_selection('left')
+        else:
+            self._clear_side_selection('right')
 
     # -----------------------------------------------------------------------
     # Selection helpers (symmetric for both sides)
@@ -2235,9 +2279,7 @@ class PhotosEditor:
         self._load_piwigo_metadata(img_dict)
         self._validate_date_field()
         self._validate_caption_field()
-        self._validate_output_filename_field()
         self.upload_photo_btn.config(state="normal")
-        self.revert_btn.config(state="normal")
         self.rotate_right_btn.config(state="normal")
         self.rotate_left_btn.config(state="normal")
         self.rotate_180_btn.config(state="normal")
@@ -2254,8 +2296,7 @@ class PhotosEditor:
 
         img_dict = self._current_image_dict
         image_id = img_dict.get("id")
-        fname    = (self.custom_vars['output_filename'].get().strip()
-                    or img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg")
+        fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
 
         # Gather metadata from custom fields
         author       = self.custom_vars['photo_source'].get().strip()
@@ -2848,8 +2889,6 @@ class PhotosEditor:
         data = self.custom_data.get(image_id)
 
         for key, widget in self.custom_vars.items():
-            if key == 'output_filename':
-                continue
             if self.persist_vars[key].get():
                 continue
             if data is None:
@@ -2866,25 +2905,6 @@ class PhotosEditor:
                 widget.insert('1.0', val)
             else:
                 widget.set(val)
-
-        # Output filename: saved → photo filename → empty
-        saved_fn = data.get('output_filename') if data else None
-        if not saved_fn and self._current_image_dict:
-            saved_fn = (self._current_image_dict.get("file") or
-                        self._current_image_dict.get("name") or "")
-        self.custom_vars['output_filename'].set(saved_fn or "")
-
-    def _copy_filename_to_caption(self):
-        filename = self.custom_vars['output_filename'].get().strip()
-        if not filename:
-            return
-        caption_widget = self.custom_vars['comments']
-        existing = caption_widget.get('1.0', 'end').rstrip('\n')
-        if existing:
-            caption_widget.insert('end', '\n' + filename)
-        else:
-            caption_widget.insert('end', filename)
-        caption_widget.edit_modified(True)
 
     def _save_current_custom_fields(self):
         if self._current_image_dict is None:
@@ -2908,7 +2928,6 @@ class PhotosEditor:
         self.url_var.set("")
         self.canvas.delete("all")
         self.upload_photo_btn.config(state="disabled")
-        self.revert_btn.config(state="disabled")
         self.rotate_right_btn.config(state="disabled")
         self.rotate_left_btn.config(state="disabled")
         self.rotate_180_btn.config(state="disabled")
@@ -2922,24 +2941,10 @@ class PhotosEditor:
                 widget.set('')
         self._validate_caption_field()
         self._validate_date_field()
-        self._validate_output_filename_field()
 
     # -----------------------------------------------------------------------
     # Field validation (identical to PhotosUploader)
     # -----------------------------------------------------------------------
-    def _validate_output_filename_field(self):
-        name = self.custom_vars['output_filename'].get().strip()
-        _, dot_ext = os.path.splitext(name)
-        ext  = dot_ext.lstrip('.').lower()
-        valid = (
-            bool(name)
-            and not self._ILLEGAL_FILENAME_CHARS.search(name)
-            and not self._RESERVED_NAMES.match(name)
-            and not name.endswith('.')
-            and ('.' + ext) in IMAGE_EXTENSIONS
-        )
-        self._field_validity['filename'] = valid
-
     def _validate_caption_field(self):
         widget = self.custom_vars['comments']
         value  = widget.get('1.0', "end").strip()
