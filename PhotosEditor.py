@@ -674,7 +674,8 @@ class PhotosEditor:
                    command=lambda: self._rotate_photo(180), state="disabled")
         self.rotate_180_btn.pack(side="left", padx=2)
         ttk.Label(row1, text="").pack(side="left", padx=16)   # spacer
-        self.crop_btn = ttk.Button(row1, text="Crop", command=self._crop_photo)
+        self.crop_btn = ttk.Button(row1, text="Crop", command=self._crop_photo,
+                                   state="disabled")
         self.crop_btn.pack(side="left", padx=2)
         ttk.Label(row1, text="").pack(side="left", padx=16)   # spacer
         self.undo_btn = ttk.Button(row1, text="Undo", command=self._undo_edit,
@@ -2638,6 +2639,7 @@ class PhotosEditor:
         self._crop_rect_id = self.canvas.create_rectangle(
             min(sx, cx), min(sy, cy), max(sx, cx), max(sy, cy),
             outline="red", width=2)
+        self.crop_btn.config(state="normal")
         self.set_status("Crop region selected — click Crop to apply, Esc to cancel.")
 
     def _clear_crop_rect(self, _event=None):
@@ -2646,6 +2648,7 @@ class PhotosEditor:
             self.canvas.delete(self._crop_rect_id)
             self._crop_rect_id = None
         self._crop_start = None
+        self.crop_btn.config(state="disabled")
 
     def _crop_photo(self):
         """Apply the current crop rectangle to the viewer image."""
