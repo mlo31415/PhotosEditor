@@ -82,9 +82,6 @@ logger = logging.getLogger("PhotosEditor")
 # ---------------------------------------------------------------------------
 # Constants (mirrored from PhotosUploader)
 # ---------------------------------------------------------------------------
-IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff',
-                    '.tif', '.webp', '.heic', '.heif'}
-
 CUSTOM_FIELDS = [
     ('photo_source',    'Photographer/Source'),
     ('date_of_photo',   'Date of Photo'),
@@ -92,7 +89,6 @@ CUSTOM_FIELDS = [
     ('tags',            'Tags (comma-separated)'),
 ]
 
-THUMB_DISPLAY_SIZE = (144, 144)   # fallback; overridden at runtime to 1.5 in
 VIEWER_FETCH_SIZE  = "medium"        # Piwigo derivative used in the editor canvas
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 
@@ -519,10 +515,6 @@ class ThumbnailPanel:
 # Main application
 # ---------------------------------------------------------------------------
 class PhotosEditor:
-    # ── class-level constants (identical to PhotosUploader) ─────────────────
-    _ILLEGAL_FILENAME_CHARS: re.Pattern = re.compile(r'[\\/:*?"<>|]')
-    _RESERVED_NAMES:         re.Pattern = re.compile(
-        r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.[^.]*)?$', re.IGNORECASE)
     _MONTH_MAP: dict = {
         'jan': 1, 'january': 1,   'feb': 2, 'february': 2,
         'mar': 3, 'march': 3,     'apr': 4, 'april': 4,
