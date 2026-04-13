@@ -435,9 +435,6 @@ class ThumbnailPanel:
         self.album_images.clear()
         self.canvas.yview_moveto(0)
 
-    def scroll_to_top(self):
-        self.canvas.yview_moveto(0)
-
     # ── Cell creation ─────────────────────────────────────────────────────────
 
     def add_cell(self, image_id: int, img_dict: dict):
@@ -877,6 +874,9 @@ class PhotosEditor:
         self.undo_btn = ttk.Button(row1, text="Undo", command=self._undo_edit,
                                    state="disabled")
         self.undo_btn.pack(side="left", padx=2)
+        self.revert_btn = ttk.Button(row1, text="Revert", command=self._revert_photo,
+                                     state="disabled")
+        self.revert_btn.pack(side="left", padx=2)
 
         # ── Photo Restoration ─────────────────────────────────────────────────
         restore_frame = ttk.LabelFrame(lower_frame, text="Photo Restoration", padding=6)
@@ -2112,6 +2112,7 @@ class PhotosEditor:
         self.rotate_right_btn.config(state="normal")
         self.rotate_left_btn.config(state="normal")
         self.rotate_180_btn.config(state="normal")
+        self.revert_btn.config(state="normal")
         self.set_status(f"Loaded: {name}")
 
     def _upload_current_photo(self):
@@ -2766,6 +2767,7 @@ class PhotosEditor:
         self.rotate_left_btn.config(state="disabled")
         self.rotate_180_btn.config(state="disabled")
         self.undo_btn.config(state="disabled")
+        self.revert_btn.config(state="disabled")
         self._edit_history.clear()
         self._clear_crop_rect()
         for widget in self.custom_vars.values():
