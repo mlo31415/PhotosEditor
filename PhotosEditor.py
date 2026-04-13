@@ -977,6 +977,15 @@ class PhotosEditor:
         self._editor_vpane.sashpos(0, round(total * 13 / 30))
 
     def _on_close(self):
+        if self._photo_edited:
+            name = (self._current_image_dict or {}).get("file") or \
+                   (self._current_image_dict or {}).get("name") or "this photo"
+            if not messagebox.askyesno(
+                    "Unsaved Edits",
+                    f'"{name}" has been edited but not uploaded to Piwigo.\n\n'
+                    "Close without uploading?",
+                    icon="warning", parent=self.root):
+                return
         state: dict = dict(self._state)   # preserve keys like editor_geometry
         # Capture editor dialog size/position even if closed via app exit
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
