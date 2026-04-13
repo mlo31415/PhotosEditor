@@ -2593,6 +2593,11 @@ class PhotosEditor:
         # Click on photo or close window to commit
         photo_canvas.bind("<Button-1>", _commit_and_close)
         win.protocol("WM_DELETE_WINDOW", _commit_and_close)
+        # Safety net: if win is destroyed from outside (e.g. parent closes),
+        # ensure the flag is always cleared so the editor can reopen.
+        win.bind("<Destroy>",
+                 lambda e: setattr(self, '_caption_editor_open', False)
+                 if e.widget is win else None)
 
         # Size to 75% of the editor dialog, centred over it
         parent.update_idletasks()
