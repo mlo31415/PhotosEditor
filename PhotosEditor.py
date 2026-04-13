@@ -16,6 +16,7 @@ import sys
 import json
 import threading
 import logging
+import warnings
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -1380,7 +1381,6 @@ class PhotosEditor:
                            f"derivatives={list(img_dict.get('derivatives', {}).keys())}")
             return
         try:
-            import warnings
             with warnings.catch_warnings():
                 if not verify:
                     warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
@@ -1591,7 +1591,6 @@ class PhotosEditor:
         if not url:
             return
         try:
-            import warnings
             with warnings.catch_warnings():
                 if not verify:
                     warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
@@ -2341,7 +2340,6 @@ class PhotosEditor:
             except Exception as e:
                 logger.warning(f"Could not fetch full image info for {img_dict.get('id')}: {e}")
 
-            import warnings
             with warnings.catch_warnings():
                 if not verify:
                     warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
