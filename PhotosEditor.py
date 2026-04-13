@@ -674,8 +674,7 @@ class PhotosEditor:
             on_grid_drop    = self._on_grid_drop,
             on_context_menu = self._on_target_context_menu,
         )
-        self._target_frame = self._target_panel.frame
-        self._main_pane.add(self._target_frame, weight=2)
+        self._main_pane.add(self._target_panel.frame, weight=2)
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -999,7 +998,7 @@ class PhotosEditor:
     def _toggle_zoom(self):
         if self._zoomed:
             # Re-add right panel, force layout, restore main sash and tree width
-            self._main_pane.add(self._target_frame, weight=2)
+            self._main_pane.add(self._target_panel.frame, weight=2)
             self._main_pane.update()
             if self._unzoomed_sash is not None:
                 self._set_main_sash(self._unzoomed_sash)
@@ -1022,7 +1021,7 @@ class PhotosEditor:
                 self._unzoomed_source_sash = self._source_panel.hpane.sashpos(0)
             except Exception:
                 self._unzoomed_source_sash = None
-            self._main_pane.forget(self._target_frame)
+            self._main_pane.forget(self._target_panel.frame)
             # Keep source tree the same width; thumbnails absorb all extra space
             self._source_panel.hpane.update()
             try:
@@ -1669,10 +1668,10 @@ class PhotosEditor:
     def _show_over_target(self, title: str, message: str):
         """Show a warning dialog centred over the Target Album panel."""
         self.root.update_idletasks()
-        tx = self._target_frame.winfo_rootx()
-        ty = self._target_frame.winfo_rooty()
-        tw = self._target_frame.winfo_width()
-        th = self._target_frame.winfo_height()
+        tx = self._target_panel.frame.winfo_rootx()
+        ty = self._target_panel.frame.winfo_rooty()
+        tw = self._target_panel.frame.winfo_width()
+        th = self._target_panel.frame.winfo_height()
 
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
@@ -1697,7 +1696,7 @@ class PhotosEditor:
             return None
         w = widget
         while w is not None:
-            if w == self._target_frame:
+            if w == self._target_panel.frame:
                 return 'right'
             if w == self._source_panel.frame:
                 return 'left'
