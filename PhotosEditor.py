@@ -2227,6 +2227,7 @@ class PhotosEditor:
                     close_dlg()
                     self._refresh_current_thumbnail()
                     self.set_status(f"Uploaded: {fname}")
+                    self._close_editor_dialog()
                 self.root.after(0, finish_ok)
 
             except Exception as e:
