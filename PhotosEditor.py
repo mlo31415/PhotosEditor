@@ -939,7 +939,6 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     def set_status(self, msg: str):
         self.status_var.set(msg)
-        self.root.update_idletasks()
 
     # -----------------------------------------------------------------------
     # Startup album hierarchy refresh
