@@ -27,25 +27,22 @@ from datetime import datetime
 try:
     from PIL import Image, ImageTk, IptcImagePlugin
     PIL_AVAILABLE = True
-except ImportError:
+except Exception:
     PIL_AVAILABLE = False
-    print("WARNING: Pillow not installed.  Run: pip install Pillow")
 
 try:
     import requests
     import urllib3
     REQUESTS_AVAILABLE = True
-except ImportError:
+except Exception:
     REQUESTS_AVAILABLE = False
-    print("WARNING: requests not installed.  Run: pip install requests")
 
 try:
     import cv2
     import numpy as np
     CV2_AVAILABLE = True
-except ImportError:
+except Exception:
     CV2_AVAILABLE = False
-    print("WARNING: opencv-python not installed.  Run: pip install opencv-python")
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +65,12 @@ try:
     # Override the params-file path to the exe/script's own directory.
     DownloadAlbumStructure.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
-    sys.exit(f"Cannot import DownloadAlbumStructure from {_PIWIGO_HELPERS}:\n{_e}")
+    import tkinter as _tk
+    import tkinter.messagebox as _mb
+    _tk.Tk().withdraw()
+    _mb.showerror("Startup Error",
+                  f"Cannot import DownloadAlbumStructure from:\n{_PIWIGO_HELPERS}\n\n{_e}")
+    sys.exit(1)
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -2868,5 +2870,26 @@ def main():
     PhotosEditor(root)
     root.mainloop()
 
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as _exc:
+        import traceback
+        _crash_log = _SCRIPT_DIR / "PhotosEditor Crash.log"
+        try:
+            with open(_crash_log, "w", encoding="utf-8") as _f:
+                traceback.print_exc(file=_f)
+        except OSError:
+            pass
+        try:
+            import tkinter as _tk
+            import tkinter.messagebox as _mb
+            _tk.Tk().withdraw()
+            _mb.showerror(
+                "Unexpected Error",
+                f"PhotosEditor crashed:\n\n{_exc}\n\n"
+                f"Details written to:\n{_crash_log}")
+        except Exception:
+            pass
+        sys.exit(1)
