@@ -1324,6 +1324,66 @@ class PhotosEditor:
         self._load_target_album_photos()
 
     # -----------------------------------------------------------------------
+    # Progress dialog helper
+    # -----------------------------------------------------------------------
+    def _make_progress_dialog(self, title: str, heading: str, total: int,
+                               subheading: str = "",
+                               initial_stage: str = "Starting…",
+                               grab: bool = False):
+        """Create a centered, non-closeable progress dialog.
+
+        total > 0  → determinate bar (0..total)
+        total == 0 → indeterminate (spinning) bar
+
+        Returns (set_stage, advance, close_dlg) — all thread-safe via root.after.
+          set_stage(msg)  update the stage label
+          advance(n)      set progress bar value
+          close_dlg()     stop the bar and destroy the dialog
+        """
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        if grab:
+            dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        dlg_alive = [True]
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
+
+        ttk.Label(dlg, text=heading, padding=(16, 12, 16, 2)).pack()
+        if subheading:
+            ttk.Label(dlg, text=subheading, padding=(16, 0, 16, 8)).pack()
+        if total > 0:
+            pbar = ttk.Progressbar(dlg, mode="determinate",
+                                   maximum=total, length=380)
+        else:
+            pbar = ttk.Progressbar(dlg, mode="indeterminate", length=380)
+        pbar.pack(padx=16, pady=(0, 4))
+        if total == 0:
+            pbar.start(12)
+        stage_var = tk.StringVar(value=initial_stage)
+        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
+                  padding=(16, 0, 16, 12)).pack()
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+        def set_stage(msg):
+            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
+
+        def advance(n):
+            self.root.after(0, lambda: pbar.__setitem__("value", n) if dlg_alive[0] else None)
+
+        def close_dlg():
+            self.root.after(0, lambda: (pbar.stop(), dlg.destroy())
+                            if dlg_alive[0] else None)
+
+        return set_stage, advance, close_dlg
+
+    # -----------------------------------------------------------------------
     # Load & display thumbnails
     # -----------------------------------------------------------------------
     def _load_panel_photos(self, panel: "ThumbnailPanel",
@@ -1750,36 +1810,11 @@ class PhotosEditor:
         """Execute copy or move for all items in batch immediately in a background thread."""
         total = len(batch)
 
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Moving Photos" if op == 'move' else "Copying Photos")
-        dlg.resizable(False, False)
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
-        dlg_alive = [True]
-        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
-
-        ttk.Label(dlg, text=f"{'Moving' if op == 'move' else 'Copying'} {total} photo(s)…",
-                  padding=(16, 12, 16, 2)).pack()
-        pbar = ttk.Progressbar(dlg, mode="determinate", maximum=max(total, 1), length=380)
-        pbar.pack(padx=16, pady=(0, 4))
-        stage_var = tk.StringVar(value="Starting…")
-        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
-                  padding=(16, 0, 16, 12)).pack()
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-        def set_stage(msg):
-            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
-
-        def advance(n):
-            self.root.after(0, lambda: pbar.__setitem__("value", n) if dlg_alive[0] else None)
-
-        def close_dlg():
-            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+        verb = 'Moving' if op == 'move' else 'Copying'
+        set_stage, advance, close_dlg = self._make_progress_dialog(
+            title=f"{verb} Photos",
+            heading=f"{verb} {total} photo(s)…",
+            total=max(total, 1))
 
         def worker():
             errors    = []
@@ -1855,36 +1890,10 @@ class PhotosEditor:
         desc   = record['description']
         total  = len(items)
 
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Undoing…")
-        dlg.resizable(False, False)
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
-        dlg_alive = [True]
-        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
-
-        ttk.Label(dlg, text=f"Undoing: {desc}",
-                  padding=(16, 12, 16, 2)).pack()
-        pbar = ttk.Progressbar(dlg, mode="determinate", maximum=max(total, 1), length=380)
-        pbar.pack(padx=16, pady=(0, 4))
-        stage_var = tk.StringVar(value="Starting…")
-        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
-                  padding=(16, 0, 16, 12)).pack()
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-        def set_stage(msg):
-            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
-
-        def advance(n):
-            self.root.after(0, lambda: pbar.__setitem__("value", n) if dlg_alive[0] else None)
-
-        def close_dlg():
-            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+        set_stage, advance, close_dlg = self._make_progress_dialog(
+            title="Undoing…",
+            heading=f"Undoing: {desc}",
+            total=max(total, 1))
 
         def worker():
             errors = []
@@ -2140,38 +2149,13 @@ class PhotosEditor:
                 date_creation = parsed.strftime('%Y-%m-%d %H:%M:%S')
 
         # Progress dialog
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Uploading…")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
-        dlg_alive = [True]
-        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
-
-        ttk.Label(dlg, text=f"Uploading  {fname}",
-                  padding=(16, 12, 16, 4)).pack()
-        ttk.Label(dlg, text=f"to  \"{self.current_album_name}\"",
-                  padding=(16, 0, 16, 8)).pack()
-        pbar = ttk.Progressbar(dlg, mode='indeterminate', length=340)
-        pbar.pack(padx=16, pady=(0, 4))
-        pbar.start(12)
-        stage_var = tk.StringVar(value="Preparing…")
-        ttk.Label(dlg, textvariable=stage_var, foreground="gray",
-                  padding=(16, 0, 16, 12)).pack()
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-        def set_stage(msg):
-            self.root.after(0, lambda: stage_var.set(msg) if dlg_alive[0] else None)
-
-        def close_dlg():
-            self.root.after(0, lambda: (pbar.stop(), dlg.destroy())
-                            if dlg_alive[0] else None)
+        set_stage, _advance, close_dlg = self._make_progress_dialog(
+            title="Uploading…",
+            heading=f"Uploading  {fname}",
+            subheading=f"to  \"{self.current_album_name}\"",
+            total=0,
+            initial_stage="Preparing…",
+            grab=True)
 
         # Snapshot the edited image now, before the thread starts
         pil_snapshot = self._viewer_image.copy()
