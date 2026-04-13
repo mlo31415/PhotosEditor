@@ -324,6 +324,7 @@ class PhotosEditor:
         self._target_cell_by_id:    dict        = {}     # image_id → right cell widget
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
+        self._zoomed:               bool        = False
         self._unzoomed_sash:        int | None  = None   # main pane sash saved before zoom
         self._unzoomed_source_sash: int | None  = None   # source hpane sash (tree width) before zoom
 
@@ -406,8 +407,6 @@ class PhotosEditor:
 
         right_frame = self._build_target_panel(self._main_pane)
         self._main_pane.add(right_frame, weight=2)
-
-        self._zoomed: bool = False
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -974,17 +973,6 @@ class PhotosEditor:
 
     # -----------------------------------------------------------------------
     # Album selection
-    # -----------------------------------------------------------------------
-    def _pick_album(self):
-        try:
-            DownloadAlbumStructure.pick_album(
-                self.root, self.set_status, self._on_album_selected,
-                title="Select Album to Edit")
-        except FileNotFoundError as e:
-            messagebox.showerror("Params file missing", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
     def _on_album_selected(self, album_id: int, fullname: str):
         self.current_album_id   = album_id
         self.current_album_name = fullname
@@ -1240,16 +1228,6 @@ class PhotosEditor:
         rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
         dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
         dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-    def _pick_target_album(self):
-        try:
-            DownloadAlbumStructure.pick_album(
-                self.root, self.set_status, self._on_target_album_selected,
-                title="Select Target Album")
-        except FileNotFoundError as e:
-            messagebox.showerror("Params file missing", str(e))
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
 
     def _on_target_album_selected(self, album_id: int, fullname: str):
         self.target_album_id   = album_id
