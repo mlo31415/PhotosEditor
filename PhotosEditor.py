@@ -554,6 +554,7 @@ class PhotosEditor:
         self._drag_is_copy:         bool        = False
         self._drag_source_side:     str         = 'left' # 'left' | 'right'
         self._drag_window:          tk.Toplevel | None = None
+        self._drag_tk_ref:          "ImageTk.PhotoImage | None" = None
         self._press_pos:            tuple | None = None
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
