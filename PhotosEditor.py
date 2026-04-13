@@ -1110,10 +1110,20 @@ class PhotosEditor:
         self._load_album_photos()
 
     # -----------------------------------------------------------------------
-    # Album hierarchy tree (embedded in target panel)
+    # Album hierarchy tree population
     # -----------------------------------------------------------------------
-    def _populate_source_hierarchy_tree(self):
-        """Load AlbumHierarchy.json into the source (left) embedded tree."""
+    def _populate_panel_hierarchy_tree(self, panel: "ThumbnailPanel",
+                                       saved_id_attr: str, saved_name_attr: str,
+                                       album_id_attr: str, album_name_attr: str,
+                                       album_var: tk.StringVar,
+                                       load_fn):
+        """Load AlbumHierarchy.json into `panel`'s tree.
+
+        `saved_id_attr` / `saved_name_attr` name the PhotosEditor instance
+        attributes holding the saved-session album ID and name to restore on
+        first population.  `album_id_attr` / `album_name_attr` name the
+        attributes holding the currently selected album for that panel.
+        """
         try:
             hier_file = DownloadAlbumStructure._album_hierarchy_file()
             if not hier_file.exists():
@@ -1121,14 +1131,14 @@ class PhotosEditor:
             with open(hier_file, encoding="utf-8") as f:
                 hierarchy = json.load(f)
         except Exception as e:
-            logger.warning(f"Could not load hierarchy for source tree: {e}")
+            logger.warning(f"Could not load hierarchy for {panel.side} tree: {e}")
             return
 
-        tree = self._source_panel.tree
+        tree = panel.tree
         for item in tree.get_children():
             tree.delete(item)
-        self._source_panel.tree_all_items = []
-        self._source_panel.tree_fullname_by_iid = {}
+        panel.tree_all_items = []
+        panel.tree_fullname_by_iid = {}
 
         def _populate(parent_iid, nodes, top_level=False):
             for node in nodes:
@@ -1137,87 +1147,59 @@ class PhotosEditor:
                 text  = f"{node['name']}  ({count:,})"
                 tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
                 fullname = node.get("fullname", node["name"])
-                self._source_panel.tree_all_items.append((iid, node["name"].lower(), fullname))
-                self._source_panel.tree_fullname_by_iid[iid] = fullname
+                panel.tree_all_items.append((iid, node["name"].lower(), fullname))
+                panel.tree_fullname_by_iid[iid] = fullname
                 if node.get("children"):
                     _populate(iid, node["children"])
 
         _populate("", hierarchy, top_level=True)
 
         # On first population, restore the saved album from the previous session.
-        if self._saved_album_id is not None:
-            iid = str(self._saved_album_id)
-            self._saved_album_id = None   # consume so it isn't re-applied on refresh
+        saved_id = getattr(self, saved_id_attr)
+        if saved_id is not None:
+            iid = str(saved_id)
+            setattr(self, saved_id_attr, None)   # consume so it isn't re-applied on refresh
             if tree.exists(iid):
-                self.current_album_id   = int(iid)
-                self.current_album_name = self._saved_album_name
-                self.album_var.set(self._saved_album_name or "(none)")
+                setattr(self, album_id_attr,   int(iid))
+                setattr(self, album_name_attr, getattr(self, saved_name_attr))
+                album_var.set(getattr(self, saved_name_attr) or "(none)")
                 tree.selection_set(iid)
                 tree.see(iid)
-                self.root.after(0, self._load_album_photos)
-            # else: album was deleted — stay at default (no album selected)
-            return
-
-        # Re-select current source album on subsequent refreshes.
-        if self.current_album_id is not None:
-            iid = str(self.current_album_id)
-            if tree.exists(iid):
-                tree.selection_set(iid)
-                tree.see(iid)
-
-    def _populate_hierarchy_tree(self):
-        """Load AlbumHierarchy.json into the target (right) embedded tree."""
-        try:
-            hier_file = DownloadAlbumStructure._album_hierarchy_file()
-            if not hier_file.exists():
-                return
-            with open(hier_file, encoding="utf-8") as f:
-                hierarchy = json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load hierarchy for tree: {e}")
-            return
-
-        tree = self._target_panel.tree
-        # Clear existing items
-        for item in tree.get_children():
-            tree.delete(item)
-        self._target_panel.tree_all_items = []   # (iid, name_lower, fullname)
-        self._target_panel.tree_fullname_by_iid = {}
-
-        def _populate(parent_iid, nodes, top_level=False):
-            for node in nodes:
-                iid   = str(node["id"])
-                count = node.get("total_nb_images", 0)
-                text  = f"{node['name']}  ({count:,})"
-                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
-                fullname = node.get("fullname", node["name"])
-                self._target_panel.tree_all_items.append((iid, node["name"].lower(), fullname))
-                self._target_panel.tree_fullname_by_iid[iid] = fullname
-                if node.get("children"):
-                    _populate(iid, node["children"])
-
-        _populate("", hierarchy, top_level=True)
-
-        # On first population, restore the saved target album from the previous session.
-        if self._saved_target_album_id is not None:
-            iid = str(self._saved_target_album_id)
-            self._saved_target_album_id = None   # consume
-            if tree.exists(iid):
-                self.target_album_id   = int(iid)
-                self.target_album_name = self._saved_target_album_name
-                self.target_album_var.set(self._saved_target_album_name or "(none)")
-                tree.selection_set(iid)
-                tree.see(iid)
-                self.root.after(0, self._load_target_album_photos)
+                self.root.after(0, load_fn)
             # else: album was deleted — stay at default
             return
 
-        # Re-select current target album on subsequent refreshes.
-        if self.target_album_id is not None:
-            iid = str(self.target_album_id)
+        # Re-select current album on subsequent refreshes.
+        current_id = getattr(self, album_id_attr)
+        if current_id is not None:
+            iid = str(current_id)
             if tree.exists(iid):
                 tree.selection_set(iid)
                 tree.see(iid)
+
+    def _populate_source_hierarchy_tree(self):
+        """Load AlbumHierarchy.json into the source (left) embedded tree."""
+        self._populate_panel_hierarchy_tree(
+            self._source_panel,
+            saved_id_attr   = '_saved_album_id',
+            saved_name_attr = '_saved_album_name',
+            album_id_attr   = 'current_album_id',
+            album_name_attr = 'current_album_name',
+            album_var       = self.album_var,
+            load_fn         = self._load_album_photos,
+        )
+
+    def _populate_hierarchy_tree(self):
+        """Load AlbumHierarchy.json into the target (right) embedded tree."""
+        self._populate_panel_hierarchy_tree(
+            self._target_panel,
+            saved_id_attr   = '_saved_target_album_id',
+            saved_name_attr = '_saved_target_album_name',
+            album_id_attr   = 'target_album_id',
+            album_name_attr = 'target_album_name',
+            album_var       = self.target_album_var,
+            load_fn         = self._load_target_album_photos,
+        )
 
     def _on_tree_rmb(self, event, tree: ttk.Treeview, fullname_map: dict):
         """Right-click on either hierarchy tree — offer 'Add sub-album'."""
