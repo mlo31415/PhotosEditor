@@ -2772,8 +2772,11 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     def _validate_caption_field(self):
         widget = self.custom_vars['comments']
-        value  = widget.get('1.0', "end").strip()
-        valid  = len(value) > 0
+        # Caption is optional — only mark invalid if it contains whitespace-only text
+        # (a non-empty but blank caption is a user mistake; truly empty is fine).
+        value  = widget.get('1.0', "end")
+        raw    = value.rstrip('\n')          # tk.Text always appends a trailing newline
+        valid  = raw == '' or bool(raw.strip())
         self._field_validity['caption'] = valid
         widget.config(bg='pink' if not valid else 'white')
 
