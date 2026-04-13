@@ -2602,6 +2602,7 @@ class PhotosEditor:
         ry = parent.winfo_rooty()
         pw = max(500, int(rw * 0.75))
         ph = max(400, int(rh * 0.75))
+        win.minsize(300, 250)
         win.geometry(f"{pw}x{ph}+{rx + (rw - pw) // 2}+{ry + (rh - ph) // 2}")
 
     # -----------------------------------------------------------------------
