@@ -1628,10 +1628,7 @@ class PhotosEditor:
 
     def _on_grid_drop(self, event, side: str):
         """ButtonRelease-1 on empty canvas area — clear selection for that side."""
-        if side == 'left':
-            self._clear_side_selection('left')
-        else:
-            self._clear_side_selection('right')
+        self._clear_side_selection(side)
 
     # -----------------------------------------------------------------------
     # Selection helpers (symmetric for both sides)
