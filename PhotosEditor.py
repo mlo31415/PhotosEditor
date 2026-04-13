@@ -51,9 +51,8 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # When frozen by PyInstaller, __file__ is inside the read-only _MEIPASS temp
 # dir.  Use sys.executable (the .exe path) to get the writable install dir.
-import sys as _sys
-if getattr(_sys, "frozen", False):
-    _SCRIPT_DIR = Path(_sys.executable).resolve().parent
+if getattr(sys, "frozen", False):
+    _SCRIPT_DIR = Path(sys.executable).resolve().parent
 else:
     _SCRIPT_DIR = Path(__file__).resolve().parent
 
