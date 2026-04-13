@@ -1175,7 +1175,7 @@ class PhotosEditor:
                 tree.see(iid)
 
     def _populate_hierarchy_tree(self):
-        """Load AlbumHierarchy.json into the embedded tree (non-blocking)."""
+        """Load AlbumHierarchy.json into the target (right) embedded tree."""
         try:
             hier_file = DownloadAlbumStructure._album_hierarchy_file()
             if not hier_file.exists():
