@@ -2313,13 +2313,8 @@ class PhotosEditor:
         self.set_status("Undo applied.")
 
     def _on_crop_start(self, event):
-        """Begin a crop drag — only if the click lands within the photo bounds."""
-        r = self._photo_display_rect
-        if r is None:
-            self._crop_start = None
-            return
-        px0, py0, px1, py1 = r
-        if event.x < px0 or event.x > px1 or event.y < py0 or event.y > py1:
+        """Begin a crop drag from anywhere on the canvas (start clamped to photo bounds at draw time)."""
+        if self._photo_display_rect is None:
             self._crop_start = None
             return
         self._clear_crop_rect()
@@ -2332,11 +2327,13 @@ class PhotosEditor:
         if r is None:
             return
         px0, py0, px1, py1 = r
+        # Clamp both endpoints so the box never extends beyond the photo.
+        sx = max(px0, min(self._crop_start[0], px1))
+        sy = max(py0, min(self._crop_start[1], py1))
         cx = max(px0, min(event.x, px1))
         cy = max(py0, min(event.y, py1))
         if self._crop_rect_id is not None:
             self.canvas.delete(self._crop_rect_id)
-        sx, sy = self._crop_start
         self._crop_rect_id = self.canvas.create_rectangle(
             sx, sy, cx, cy, outline="red", width=2)
 
@@ -2347,9 +2344,11 @@ class PhotosEditor:
         if r is None:
             return
         px0, py0, px1, py1 = r
+        # Clamp both endpoints to photo bounds.
+        sx = max(px0, min(self._crop_start[0], px1))
+        sy = max(py0, min(self._crop_start[1], py1))
         cx = max(px0, min(event.x, px1))
         cy = max(py0, min(event.y, py1))
-        sx, sy = self._crop_start
         self._crop_start = None
         # Discard tiny drag (< 4 px in either axis)
         if abs(cx - sx) < 4 or abs(cy - sy) < 4:
