@@ -252,6 +252,270 @@ def _pick_derivative_url(img_dict: dict, preference: tuple) -> str:
 
 
 # ---------------------------------------------------------------------------
+# ThumbnailPanel
+# ---------------------------------------------------------------------------
+class ThumbnailPanel:
+    """A scrollable thumbnail grid with an embedded album hierarchy tree.
+
+    Encapsulates all per-panel state: canvas, grid frame, caches, cells,
+    and selected IDs.  PhotosEditor creates two instances (source / target)
+    and wires them together via callbacks.
+    """
+
+    def __init__(self, parent: tk.Widget, root: tk.Tk, side: str,
+                 thumb_size: tuple,
+                 album_var: tk.StringVar,
+                 count_var: tk.StringVar,
+                 on_tree_select,        # (album_id, fullname) -> None
+                 on_tree_populate,      # () -> None  (called after widget mapped)
+                 on_tree_rmb,           # (event, tree, fullname_map) -> None
+                 on_cell_press,         # (event, img_dict, cell, side) -> None
+                 on_cell_motion,        # (event, img_dict, cell, side) -> None
+                 on_cell_release,       # (event, img_dict, cell, side) -> None
+                 on_cell_double,        # (img_dict) -> None
+                 on_grid_drop,          # (event, side) -> None
+                 on_context_menu,       # (event, iid, img_dict, cell) -> None
+                 ):
+        self.root        = root
+        self.side        = side
+        self.thumb_size  = thumb_size
+        self._on_tree_select   = on_tree_select
+        self._on_tree_populate = on_tree_populate
+        self._on_tree_rmb      = on_tree_rmb
+        self._on_cell_press    = on_cell_press
+        self._on_cell_motion   = on_cell_motion
+        self._on_cell_release  = on_cell_release
+        self._on_cell_double   = on_cell_double
+        self._on_grid_drop     = on_grid_drop
+        self._on_context_menu  = on_context_menu
+
+        # Per-panel state
+        self.album_images: list[dict] = []
+        self.thumb_cache:  dict = {}   # image_id → PIL Image
+        self.thumb_tk:     dict = {}   # image_id → PhotoImage (GC anchor)
+        self.thumb_cells:  list = []   # ordered cell widgets
+        self.img_labels:   dict = {}   # image_id → tk.Label
+        self.cell_by_id:   dict = {}   # image_id → tk.Frame
+        self.selected_ids: set  = set()
+
+        # Tree state (populated by PhotosEditor)
+        self.tree_all_items:       list = []
+        self.tree_fullname_by_iid: dict = {}
+
+        self.frame = ttk.Frame(parent)
+        self._build(album_var, count_var)
+
+    # ── UI construction ──────────────────────────────────────────────────────
+
+    def _build(self, album_var: tk.StringVar, count_var: tk.StringVar):
+        hpane = ttk.PanedWindow(self.frame, orient="horizontal")
+        hpane.pack(fill="both", expand=True)
+        self.hpane = hpane
+
+        # ── Album hierarchy tree ─────────────────────────────────────────────
+        tree_outer = ttk.LabelFrame(hpane, text="", padding=4)
+        hpane.add(tree_outer, weight=2)
+
+        filter_frame = ttk.Frame(tree_outer)
+        filter_frame.pack(fill="x", pady=(0, 4))
+        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
+        self._filter_var = tk.StringVar()
+        ttk.Entry(filter_frame, textvariable=self._filter_var).pack(
+            side="left", fill="x", expand=True)
+
+        tree_frame = ttk.Frame(tree_outer)
+        tree_frame.pack(fill="both", expand=True)
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
+        self.tree = ttk.Treeview(
+            tree_frame, selectmode="browse", show="tree",
+            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        yscroll.config(command=self.tree.yview)
+        xscroll.config(command=self.tree.xview)
+        yscroll.pack(side="right", fill="y")
+        xscroll.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.column("#0", minwidth=200)
+
+        self._filter_var.trace_add("write", self._on_filter)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select_event)
+        self.tree.bind("<Double-1>",         self._on_tree_select_event)
+        self.tree.bind("<Button-3>",
+            lambda e: self._on_tree_rmb(e, self.tree, self.tree_fullname_by_iid))
+        self.tree.bind("<MouseWheel>",
+            lambda e: self.tree.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        # ── Thumbnail grid ───────────────────────────────────────────────────
+        thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
+        hpane.add(thumb_outer, weight=3)
+
+        top = ttk.Frame(thumb_outer)
+        top.pack(fill="x", pady=(0, 4))
+        ttk.Label(top, text="Album:").pack(side="left")
+        ttk.Label(top, textvariable=album_var,
+                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
+        ttk.Label(top, textvariable=count_var,
+                  foreground="gray").pack(side="right", padx=4)
+
+        container = ttk.Frame(thumb_outer)
+        container.pack(fill="both", expand=True)
+
+        self.canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
+        vscroll = ttk.Scrollbar(container, orient="vertical",
+                                command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.grid_frame = tk.Frame(self.canvas, bg="#2a2a2a")
+        self._grid_win = self.canvas.create_window(0, 0, anchor="nw",
+                                                   window=self.grid_frame)
+
+        self.grid_frame.bind("<Configure>",   self._on_grid_resize)
+        self.grid_frame.bind("<MouseWheel>",  self._on_mousewheel)
+        self.canvas.bind("<Configure>",       self._on_canvas_resize)
+        self.canvas.bind("<MouseWheel>",      self._on_mousewheel)
+        self.canvas.bind("<ButtonRelease-1>",
+                         lambda e: self._on_grid_drop(e, self.side))
+
+        self.frame.bind("<Map>",
+            lambda e: self.root.after(50, self._on_tree_populate), add="+")
+
+    # ── Tree helpers ─────────────────────────────────────────────────────────
+
+    def _on_tree_select_event(self, _event=None):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        iid      = sel[0]
+        album_id = int(iid)
+        fullname = self.tree_fullname_by_iid.get(iid, "")
+        self._on_tree_select(album_id, fullname)
+
+    def _on_filter(self, *_):
+        q = self._filter_var.get().strip().lower()
+        if not q:
+            self.tree.selection_remove(self.tree.selection())
+            return
+        for iid, name_lower, _ in self.tree_all_items:
+            if q in name_lower:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                return
+        self.tree.selection_remove(self.tree.selection())
+
+    # ── Grid helpers ─────────────────────────────────────────────────────────
+
+    def _on_grid_resize(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_resize(self, event):
+        self.canvas.itemconfigure(self._grid_win, width=event.width)
+        self.reflow()
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    def reflow(self):
+        if not self.thumb_cells:
+            return
+        canvas_w = self.canvas.winfo_width()
+        if canvas_w < 10:
+            canvas_w = self.thumb_size[0] + 20
+        cols = max(1, canvas_w // (self.thumb_size[0] + 16))
+        for idx, cell in enumerate(self.thumb_cells):
+            r, c = divmod(idx, cols)
+            cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
+
+    def clear(self):
+        for cell in self.thumb_cells:
+            cell.destroy()
+        self.thumb_cells.clear()
+        self.thumb_cache.clear()
+        self.thumb_tk.clear()
+        self.img_labels.clear()
+        self.cell_by_id.clear()
+        self.selected_ids.clear()
+        self.album_images.clear()
+        self.canvas.yview_moveto(0)
+
+    def scroll_to_top(self):
+        self.canvas.yview_moveto(0)
+
+    # ── Cell creation ─────────────────────────────────────────────────────────
+
+    def add_cell(self, image_id: int, img_dict: dict):
+        pil = self.thumb_cache.get(image_id)
+        if pil is None:
+            return
+        tk_img = ImageTk.PhotoImage(pil)
+        self.thumb_tk[image_id] = tk_img
+
+        name = img_dict.get("name") or img_dict.get("file") or f"#{image_id}"
+        cell = tk.Frame(self.grid_frame, bg="#3a3a3a", relief="flat",
+                        padx=2, pady=2, cursor="hand2")
+        img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
+        img_lbl.pack()
+        self.img_labels[image_id] = img_lbl
+        self.cell_by_id[image_id] = cell
+        name_lbl = tk.Label(cell, text=_truncate(name, 20),
+                            bg="#3a3a3a", fg="#dddddd",
+                            font=("TkDefaultFont", 8), anchor="center",
+                            wraplength=self.thumb_size[0])
+        name_lbl.pack(fill="x")
+
+        def _tip_text(d=img_dict, iid=image_id):
+            parts = []
+            fname = (d.get("file") or d.get("name") or f"#{iid}").strip()
+            if fname:
+                parts.append(fname)
+            caption = (d.get("comment") or "").strip()
+            if caption:
+                parts.append(f"Caption: {caption}")
+            return "\n".join(parts)
+
+        tip = _Tooltip(_tip_text)
+        side = self.side
+        for w in (cell, img_lbl, name_lbl):
+            w.bind("<ButtonPress-1>",
+                   lambda e, d=img_dict, c=cell: self._on_cell_press(e, d, c, side))
+            w.bind("<B1-Motion>",
+                   lambda e, d=img_dict, c=cell: self._on_cell_motion(e, d, c, side))
+            w.bind("<ButtonRelease-1>",
+                   lambda e, d=img_dict, c=cell: self._on_cell_release(e, d, c, side))
+            w.bind("<Double-Button-1>",
+                   lambda e, d=img_dict: self._on_cell_double(d))
+            w.bind("<Enter>",
+                   lambda e, iid=image_id, c=cell: self._enter(iid, c))
+            w.bind("<Leave>",
+                   lambda e, iid=image_id, c=cell: self._leave(iid, c))
+            w.bind("<Button-3>",
+                   lambda e, iid=image_id, d=img_dict, c=cell:
+                       self._on_context_menu(e, iid, d, c))
+            w.bind("<MouseWheel>", self._on_mousewheel)
+            tip.attach(w)
+
+        self.thumb_cells.append(cell)
+        self.reflow()
+
+    def _enter(self, image_id, cell: tk.Frame):
+        if image_id not in self.selected_ids:
+            cell.configure(bg="#5a5a5a", relief="raised")
+
+    def _leave(self, image_id, cell: tk.Frame):
+        if image_id not in self.selected_ids:
+            cell.configure(bg="#3a3a3a", relief="flat")
+
+    def update_thumbnail(self, image_id: int, pil, tk_img):
+        """Replace the cached image and update the label in-place."""
+        lbl = self.img_labels.get(image_id)
+        if lbl is not None:
+            self.thumb_cache[image_id] = pil
+            self.thumb_tk[image_id]    = tk_img
+            lbl.configure(image=tk_img)
+
+
+# ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 class PhotosEditor:
@@ -285,32 +549,16 @@ class PhotosEditor:
         _sz = max(100, int(root.winfo_fpixels('1.5i')))
         self._thumb_size = (_sz, _sz)
 
-        # ── album / thumbnail state ─────────────────────────────────────────
+        # ── album state ────────────────────────────────────────────────────────
         self.current_album_id:   int | None = None
         self.current_album_name: str        = ""
+        self.target_album_id:    int | None = None
+        self.target_album_name:  str        = ""
         # Saved IDs from previous session (consumed by _populate_*_hierarchy_tree)
         self._saved_album_id:          int | None = None
         self._saved_album_name:        str        = ""
         self._saved_target_album_id:   int | None = None
         self._saved_target_album_name: str        = ""
-        self._album_images:      list[dict] = []
-        self._thumb_cache:       dict       = {}   # image_id → PIL Image
-        self._thumb_tk:          dict       = {}   # image_id → PhotoImage (GC anchor)
-        self._thumb_cells:       list       = []   # ordered cell widgets
-        self._thumb_img_labels:  dict       = {}   # image_id → tk.Label showing the thumbnail
-
-        # ── target album state (Photo Move Mode) ────────────────────────────
-        self.target_album_id:   int | None = None
-        self.target_album_name: str        = ""
-        self._target_album_images: list[dict] = []
-        self._target_thumb_cache:      dict       = {}
-        self._target_thumb_tk:         dict       = {}
-        self._target_thumb_cells:      list       = []
-        self._target_thumb_img_labels: dict       = {}   # image_id → tk.Label
-        self._tree_all_items:       list = []
-        self._tree_fullname_by_iid: dict = {}
-        self._source_tree_all_items:       list = []
-        self._source_tree_fullname_by_iid: dict = {}
 
         # ── drag-and-drop / selection state ─────────────────────────────────
         self._drag_batch:           list        = []     # list of img_dict being dragged
@@ -318,10 +566,6 @@ class PhotosEditor:
         self._drag_source_side:     str         = 'left' # 'left' | 'right'
         self._drag_window:          tk.Toplevel | None = None
         self._press_pos:            tuple | None = None
-        self._selected_ids:         set         = set()  # selected image ids (left grid)
-        self._target_selected_ids:  set         = set()  # selected image ids (right grid)
-        self._cell_by_id:           dict        = {}     # image_id → left cell widget
-        self._target_cell_by_id:    dict        = {}     # image_id → right cell widget
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
         self._zoomed:               bool        = False
@@ -402,103 +646,50 @@ class PhotosEditor:
         self._main_pane = ttk.PanedWindow(self.root, orient="horizontal")
         self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
 
-        left_frame = self._build_thumb_panel(self._main_pane)
-        self._main_pane.add(left_frame, weight=2)
+        self._source_panel = ThumbnailPanel(
+            parent          = self._main_pane,
+            root            = self.root,
+            side            = 'left',
+            thumb_size      = self._thumb_size,
+            album_var       = self.album_var,
+            count_var       = self.thumb_count_var,
+            on_tree_select  = self._on_source_album_selected_from_tree,
+            on_tree_populate= self._populate_source_hierarchy_tree,
+            on_tree_rmb     = self._on_tree_rmb,
+            on_cell_press   = self._on_cell_press,
+            on_cell_motion  = self._on_cell_motion,
+            on_cell_release = self._on_cell_release,
+            on_cell_double  = self._on_cell_double,
+            on_grid_drop    = self._on_grid_drop,
+            on_context_menu = self._on_source_context_menu,
+        )
+        self._main_pane.add(self._source_panel.frame, weight=2)
 
-        right_frame = self._build_target_panel(self._main_pane)
-        self._main_pane.add(right_frame, weight=2)
+        self._target_panel = ThumbnailPanel(
+            parent          = self._main_pane,
+            root            = self.root,
+            side            = 'right',
+            thumb_size      = self._thumb_size,
+            album_var       = self.target_album_var,
+            count_var       = self.target_thumb_count_var,
+            on_tree_select  = self._on_target_album_selected_from_tree,
+            on_tree_populate= self._populate_hierarchy_tree,
+            on_tree_rmb     = self._on_tree_rmb,
+            on_cell_press   = self._on_cell_press,
+            on_cell_motion  = self._on_cell_motion,
+            on_cell_release = self._on_cell_release,
+            on_cell_double  = self._on_cell_double,
+            on_grid_drop    = self._on_grid_drop,
+            on_context_menu = self._on_target_context_menu,
+        )
+        self._target_frame = self._target_panel.frame
+        self._main_pane.add(self._target_frame, weight=2)
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
         status_bar.pack(side="bottom", fill="x")
         ttk.Label(status_bar, textvariable=self.status_var,
                   anchor="w").pack(side="left", padx=6, pady=2)
-
-    # ── left panel: thumbnail browser ───────────────────────────────────────
-    def _build_thumb_panel(self, parent) -> ttk.Frame:
-        frame = ttk.Frame(parent)
-        self._thumb_panel_frame = frame
-
-        # ── Horizontal pane: album tree (left) | thumbnail grid (right) ──────
-        hpane = ttk.PanedWindow(frame, orient="horizontal")
-        hpane.pack(fill="both", expand=True)
-        self._source_hpane = hpane
-
-        # ── Left: album hierarchy tree ────────────────────────────────────────
-        tree_outer = ttk.LabelFrame(hpane, text="", padding=4)
-        hpane.add(tree_outer, weight=2)
-
-        filter_frame = ttk.Frame(tree_outer)
-        filter_frame.pack(fill="x", pady=(0, 4))
-        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
-        self._source_filter_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=self._source_filter_var).pack(
-            side="left", fill="x", expand=True)
-
-        tree_frame = ttk.Frame(tree_outer)
-        tree_frame.pack(fill="both", expand=True)
-        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
-        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
-        self._source_hierarchy_tree = ttk.Treeview(
-            tree_frame, selectmode="browse", show="tree",
-            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        yscroll.config(command=self._source_hierarchy_tree.yview)
-        xscroll.config(command=self._source_hierarchy_tree.xview)
-        yscroll.pack(side="right", fill="y")
-        xscroll.pack(side="bottom", fill="x")
-        self._source_hierarchy_tree.pack(side="left", fill="both", expand=True)
-        self._source_hierarchy_tree.column("#0", minwidth=200)
-
-        self._source_filter_var.trace_add("write", self._on_source_tree_filter)
-        self._source_hierarchy_tree.bind("<<TreeviewSelect>>", self._on_source_hierarchy_select)
-        self._source_hierarchy_tree.bind("<Double-1>",         self._on_source_hierarchy_select)
-        self._source_hierarchy_tree.bind("<Button-3>",
-            lambda e: self._on_tree_rmb(e, self._source_hierarchy_tree,
-                                        self._source_tree_fullname_by_iid))
-        self._source_hierarchy_tree.bind(
-            "<MouseWheel>",
-            lambda e: self._source_hierarchy_tree.yview_scroll(
-                -1 * (e.delta // 120), "units"))
-
-        # ── Right: source album thumbnail grid ────────────────────────────────
-        thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
-        hpane.add(thumb_outer, weight=3)
-        self._thumb_grid_frame_label = thumb_outer
-
-        top = ttk.Frame(thumb_outer)
-        top.pack(fill="x", pady=(0, 4))
-        ttk.Label(top, text="Album:").pack(side="left")
-        ttk.Label(top, textvariable=self.album_var,
-                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
-        ttk.Label(top, textvariable=self.thumb_count_var,
-                  foreground="gray").pack(side="right", padx=4)
-
-        container = ttk.Frame(thumb_outer)
-        container.pack(fill="both", expand=True)
-
-        self._thumb_canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
-        vscroll2 = ttk.Scrollbar(container, orient="vertical",
-                                 command=self._thumb_canvas.yview)
-        self._thumb_canvas.configure(yscrollcommand=vscroll2.set)
-        vscroll2.pack(side="right", fill="y")
-        self._thumb_canvas.pack(side="left", fill="both", expand=True)
-
-        self._grid_frame = tk.Frame(self._thumb_canvas, bg="#2a2a2a")
-        self._grid_win = self._thumb_canvas.create_window(
-            0, 0, anchor="nw", window=self._grid_frame)
-
-        self._grid_frame.bind("<Configure>",    self._on_grid_resize)
-        self._grid_frame.bind("<MouseWheel>",   self._on_mousewheel)
-        self._thumb_canvas.bind("<Configure>",  self._on_thumb_canvas_resize)
-        self._thumb_canvas.bind("<MouseWheel>", self._on_mousewheel)
-        # Drops from right grid onto left grid
-        self._thumb_canvas.bind("<ButtonRelease-1>",
-                                lambda e: self._on_grid_drop(e, 'left'))
-
-        # Populate tree once the widget is mapped
-        frame.bind("<Map>", lambda e: self.root.after(50, self._populate_source_hierarchy_tree), add="+")
-
-        return frame
 
     # ── Editor dialog: opened on double-click of any thumbnail ─────────────
     def _open_editor_dialog(self, img_dict: dict):
@@ -743,91 +934,6 @@ class PhotosEditor:
 
         dlg.after(100, self._set_initial_sash_positions)
 
-    # ── right panel: target album (Photo Move Mode) ──────────────────────────
-    def _build_target_panel(self, parent) -> ttk.Frame:
-        frame = ttk.Frame(parent)
-        self._target_frame = frame
-
-        # ── Horizontal pane: album tree (left) | thumbnail grid (right) ──────
-        hpane = ttk.PanedWindow(frame, orient="horizontal")
-        hpane.pack(fill="both", expand=True)
-        self._target_hpane = hpane
-
-        # ── Left: album hierarchy tree ────────────────────────────────────────
-        tree_outer = ttk.LabelFrame(hpane, text="", padding=4)
-        hpane.add(tree_outer, weight=2)
-
-        filter_frame = ttk.Frame(tree_outer)
-        filter_frame.pack(fill="x", pady=(0, 4))
-        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
-        self._tree_filter_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=self._tree_filter_var).pack(
-            side="left", fill="x", expand=True)
-
-        tree_frame = ttk.Frame(tree_outer)
-        tree_frame.pack(fill="both", expand=True)
-        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
-        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
-        self._hierarchy_tree = ttk.Treeview(
-            tree_frame, selectmode="browse", show="tree",
-            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        yscroll.config(command=self._hierarchy_tree.yview)
-        xscroll.config(command=self._hierarchy_tree.xview)
-        yscroll.pack(side="right", fill="y")
-        xscroll.pack(side="bottom", fill="x")
-        self._hierarchy_tree.pack(side="left", fill="both", expand=True)
-        self._hierarchy_tree.column("#0", minwidth=200)
-
-        self._tree_filter_var.trace_add("write", self._on_tree_filter)
-        self._hierarchy_tree.bind("<<TreeviewSelect>>", self._on_hierarchy_select)
-        self._hierarchy_tree.bind("<Double-1>",         self._on_hierarchy_select)
-        self._hierarchy_tree.bind("<Button-3>",
-            lambda e: self._on_tree_rmb(e, self._hierarchy_tree,
-                                        self._tree_fullname_by_iid))
-        self._hierarchy_tree.bind(
-            "<MouseWheel>",
-            lambda e: self._hierarchy_tree.yview_scroll(
-                -1 * (e.delta // 120), "units"))
-
-        # ── Right: target album thumbnail grid ───────────────────────────────
-        thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
-        hpane.add(thumb_outer, weight=3)
-
-        top = ttk.Frame(thumb_outer)
-        top.pack(fill="x", pady=(0, 4))
-        ttk.Label(top, text="Album:").pack(side="left")
-        ttk.Label(top, textvariable=self.target_album_var,
-                  foreground="blue", anchor="w").pack(side="left", padx=(4, 0))
-        ttk.Label(top, textvariable=self.target_thumb_count_var,
-                  foreground="gray").pack(side="right", padx=4)
-
-        container = ttk.Frame(thumb_outer)
-        container.pack(fill="both", expand=True)
-
-        self._target_thumb_canvas = tk.Canvas(container, bg="#2a2a2a", highlightthickness=0)
-        vscroll = ttk.Scrollbar(container, orient="vertical",
-                                command=self._target_thumb_canvas.yview)
-        self._target_thumb_canvas.configure(yscrollcommand=vscroll.set)
-        vscroll.pack(side="right", fill="y")
-        self._target_thumb_canvas.pack(side="left", fill="both", expand=True)
-
-        self._target_grid_frame = tk.Frame(self._target_thumb_canvas, bg="#2a2a2a")
-        self._target_grid_win = self._target_thumb_canvas.create_window(
-            0, 0, anchor="nw", window=self._target_grid_frame)
-
-        self._target_grid_frame.bind("<Configure>",    self._on_target_grid_resize)
-        self._target_grid_frame.bind("<MouseWheel>",   self._on_target_mousewheel)
-        self._target_thumb_canvas.bind("<Configure>",  self._on_target_canvas_resize)
-        self._target_thumb_canvas.bind("<MouseWheel>", self._on_target_mousewheel)
-        # Drops from left grid onto right grid
-        self._target_thumb_canvas.bind("<ButtonRelease-1>",
-                                       lambda e: self._on_grid_drop(e, 'right'))
-
-        # Populate tree once the widget is mapped
-        frame.bind("<Map>", lambda e: self.root.after(50, self._populate_hierarchy_tree), add="+")
-
-        return frame
-
     # -----------------------------------------------------------------------
     # State / geometry
     # -----------------------------------------------------------------------
@@ -907,9 +1013,9 @@ class PhotosEditor:
                 self._set_main_sash(self._unzoomed_sash)
             # Restore the source tree to its pre-zoom width
             if self._unzoomed_source_sash is not None:
-                self._source_hpane.update()
+                self._source_panel.hpane.update()
                 try:
-                    self._source_hpane.sashpos(0, self._unzoomed_source_sash)
+                    self._source_panel.hpane.sashpos(0, self._unzoomed_source_sash)
                 except Exception:
                     pass
             self._zoom_btn.config(text="Zoom")
@@ -921,14 +1027,14 @@ class PhotosEditor:
             except Exception:
                 self._unzoomed_sash = None
             try:
-                self._unzoomed_source_sash = self._source_hpane.sashpos(0)
+                self._unzoomed_source_sash = self._source_panel.hpane.sashpos(0)
             except Exception:
                 self._unzoomed_source_sash = None
             self._main_pane.forget(self._target_frame)
             # Keep source tree the same width; thumbnails absorb all extra space
-            self._source_hpane.update()
+            self._source_panel.hpane.update()
             try:
-                self._source_hpane.sashpos(0, self._unzoomed_source_sash)
+                self._source_panel.hpane.sashpos(0, self._unzoomed_source_sash)
             except Exception:
                 pass
             self._zoom_btn.config(text="Unzoom")
@@ -973,6 +1079,38 @@ class PhotosEditor:
 
     # -----------------------------------------------------------------------
     # Album selection
+    def _on_source_album_selected_from_tree(self, album_id: int, fullname: str):
+        if album_id != self.current_album_id:
+            self._on_album_selected(album_id, fullname)
+
+    def _on_target_album_selected_from_tree(self, album_id: int, fullname: str):
+        if album_id != self.target_album_id:
+            self._on_target_album_selected(album_id, fullname)
+
+    def _on_source_context_menu(self, event, iid: int, img_dict: dict, cell):
+        menu = tk.Menu(cell, tearoff=0)
+        if iid in self._source_panel.selected_ids and len(self._source_panel.selected_ids) > 1:
+            n = len(self._source_panel.selected_ids)
+            menu.add_command(
+                label=f"Remove {n} selected from Album",
+                command=lambda: self._remove_selection_from_album('left'))
+        else:
+            menu.add_command(label="Remove from Album",
+                             command=lambda: self._remove_from_album(iid, img_dict, 'left'))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_target_context_menu(self, event, iid: int, img_dict: dict, cell):
+        menu = tk.Menu(cell, tearoff=0)
+        if iid in self._target_panel.selected_ids and len(self._target_panel.selected_ids) > 1:
+            n = len(self._target_panel.selected_ids)
+            menu.add_command(
+                label=f"Remove {n} selected from Album",
+                command=lambda: self._remove_selection_from_album('right'))
+        else:
+            menu.add_command(label="Remove from Album",
+                             command=lambda: self._remove_from_album(iid, img_dict, 'right'))
+        menu.tk_popup(event.x_root, event.y_root)
+
     def _on_album_selected(self, album_id: int, fullname: str):
         self.current_album_id   = album_id
         self.current_album_name = fullname
@@ -995,11 +1133,11 @@ class PhotosEditor:
             logger.warning(f"Could not load hierarchy for source tree: {e}")
             return
 
-        tree = self._source_hierarchy_tree
+        tree = self._source_panel.tree
         for item in tree.get_children():
             tree.delete(item)
-        self._source_tree_all_items = []
-        self._source_tree_fullname_by_iid = {}
+        self._source_panel.tree_all_items = []
+        self._source_panel.tree_fullname_by_iid = {}
 
         def _populate(parent_iid, nodes, top_level=False):
             for node in nodes:
@@ -1008,8 +1146,8 @@ class PhotosEditor:
                 text  = f"{node['name']}  ({count:,})"
                 tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
                 fullname = node.get("fullname", node["name"])
-                self._source_tree_all_items.append((iid, node["name"].lower(), fullname))
-                self._source_tree_fullname_by_iid[iid] = fullname
+                self._source_panel.tree_all_items.append((iid, node["name"].lower(), fullname))
+                self._source_panel.tree_fullname_by_iid[iid] = fullname
                 if node.get("children"):
                     _populate(iid, node["children"])
 
@@ -1036,29 +1174,6 @@ class PhotosEditor:
                 tree.selection_set(iid)
                 tree.see(iid)
 
-    def _on_source_tree_filter(self, *_):
-        q = self._source_filter_var.get().strip().lower()
-        tree = self._source_hierarchy_tree
-        if not q:
-            tree.selection_remove(tree.selection())
-            return
-        for iid, name_lower, _ in self._source_tree_all_items:
-            if q in name_lower:
-                tree.selection_set(iid)
-                tree.see(iid)
-                return
-        tree.selection_remove(tree.selection())
-
-    def _on_source_hierarchy_select(self, _event=None):
-        sel = self._source_hierarchy_tree.selection()
-        if not sel:
-            return
-        iid      = sel[0]
-        album_id = int(iid)
-        fullname = self._source_tree_fullname_by_iid.get(iid, "")
-        if album_id != self.current_album_id:
-            self._on_album_selected(album_id, fullname)
-
     def _populate_hierarchy_tree(self):
         """Load AlbumHierarchy.json into the embedded tree (non-blocking)."""
         try:
@@ -1071,12 +1186,12 @@ class PhotosEditor:
             logger.warning(f"Could not load hierarchy for tree: {e}")
             return
 
-        tree = self._hierarchy_tree
+        tree = self._target_panel.tree
         # Clear existing items
         for item in tree.get_children():
             tree.delete(item)
-        self._tree_all_items = []   # (iid, name_lower, fullname)
-        self._tree_fullname_by_iid = {}
+        self._target_panel.tree_all_items = []   # (iid, name_lower, fullname)
+        self._target_panel.tree_fullname_by_iid = {}
 
         def _populate(parent_iid, nodes, top_level=False):
             for node in nodes:
@@ -1085,8 +1200,8 @@ class PhotosEditor:
                 text  = f"{node['name']}  ({count:,})"
                 tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
                 fullname = node.get("fullname", node["name"])
-                self._tree_all_items.append((iid, node["name"].lower(), fullname))
-                self._tree_fullname_by_iid[iid] = fullname
+                self._target_panel.tree_all_items.append((iid, node["name"].lower(), fullname))
+                self._target_panel.tree_fullname_by_iid[iid] = fullname
                 if node.get("children"):
                     _populate(iid, node["children"])
 
@@ -1112,30 +1227,6 @@ class PhotosEditor:
             if tree.exists(iid):
                 tree.selection_set(iid)
                 tree.see(iid)
-
-    def _on_tree_filter(self, *_):
-        q = self._tree_filter_var.get().strip().lower()
-        tree = self._hierarchy_tree
-        if not q:
-            tree.selection_remove(tree.selection())
-            return
-        for iid, name_lower, _ in self._tree_all_items:
-            if q in name_lower:
-                tree.selection_set(iid)
-                tree.see(iid)
-                return
-        tree.selection_remove(tree.selection())
-
-    def _on_hierarchy_select(self, _event=None):
-        sel = self._hierarchy_tree.selection()
-        if not sel:
-            return
-        iid      = sel[0]
-        album_id = int(iid)
-        fullname = self._tree_fullname_by_iid.get(iid, "")
-        # Only reload if a different album was chosen
-        if album_id != self.target_album_id:
-            self._on_target_album_selected(album_id, fullname)
 
     def _on_tree_rmb(self, event, tree: ttk.Treeview, fullname_map: dict):
         """Right-click on either hierarchy tree — offer 'Add sub-album'."""
@@ -1239,73 +1330,82 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Load & display thumbnails
     # -----------------------------------------------------------------------
-    def _load_album_photos(self):
-        if self.current_album_id is None:
-            messagebox.showinfo("No Album", "Please select an album first (toolbar).")
-            return
-        self._clear_thumbnails()
-        self.thumb_count_var.set("")
-        self.set_status(f"Fetching photos from \"{self.current_album_name}\"…")
+    def _load_panel_photos(self, panel: "ThumbnailPanel",
+                           album_id: int, album_name: str,
+                           count_var: tk.StringVar):
+        panel.clear()
+        self._drag_batch.clear()
+        count_var.set("")
+        self.set_status(f"Fetching photos from \"{album_name}\"…")
 
-        # ── Progress dialog ────────────────────────────────────────────────
         dlg = tk.Toplevel(self.root)
         dlg.title("Downloading Photos")
         dlg.resizable(False, False)
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)   # block close button
-
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
         dlg_alive = [True]
-        def _on_dlg_destroyed(_e=None): dlg_alive[0] = False
-        dlg.bind("<Destroy>", _on_dlg_destroyed)
+        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
 
         ttk.Label(dlg, text="Downloading thumbnails from:",
                   padding=(16, 12, 16, 2)).pack()
-        ttk.Label(dlg, text=self.current_album_name,
+        ttk.Label(dlg, text=album_name,
                   font=("TkDefaultFont", 9, "bold"),
                   padding=(16, 0, 16, 8)).pack()
-
         pbar = ttk.Progressbar(dlg, mode="indeterminate", length=360)
         pbar.pack(padx=16, pady=(0, 4))
         pbar.start(12)
-
-        count_var = tk.StringVar(value="Connecting…")
-        ttk.Label(dlg, textvariable=count_var, foreground="gray",
+        count_lbl_var = tk.StringVar(value="Connecting…")
+        ttk.Label(dlg, textvariable=count_lbl_var, foreground="gray",
                   padding=(16, 0, 16, 12)).pack()
 
-        # Centre over main window
         self.root.update_idletasks()
         dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(),   self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(),   self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(),      dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx + (rw - dw) // 2}+{ry + (rh - dh) // 2}")
+        rw, rh = self.root.winfo_width(),  self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(),  self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(),     dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
 
-        # ── Callbacks called from the background thread via root.after() ───
-        def _on_total(n: int):
+        def _on_total(n):
             def _apply():
                 if not dlg_alive[0]: return
                 pbar.stop()
                 pbar.configure(mode="determinate", maximum=max(n, 1))
-                count_var.set(f"0 / {n}")
+                count_lbl_var.set(f"0 / {n}")
             self.root.after(0, _apply)
 
-        def _on_progress(done: int, total: int):
+        def _on_progress(done, total):
             def _apply():
                 if not dlg_alive[0]: return
                 pbar["value"] = done
-                count_var.set(f"{done} / {total}")
+                count_lbl_var.set(f"{done} / {total}")
             self.root.after(0, _apply)
 
         def _on_done():
-            def _apply():
-                if dlg_alive[0]: dlg.destroy()
-            self.root.after(0, _apply)
+            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
 
         threading.Thread(
             target=self._worker_fetch_photos,
-            args=(_on_total, _on_progress, _on_done),
+            args=(panel, album_id, album_name, count_var, _on_total, _on_progress, _on_done),
             daemon=True).start()
 
-    def _worker_fetch_photos(self, on_total, on_progress, on_done):
+    def _load_album_photos(self):
+        if self.current_album_id is None:
+            messagebox.showinfo("No Album", "Please select an album first.")
+            return
+        self._load_panel_photos(self._source_panel,
+                                self.current_album_id, self.current_album_name,
+                                self.thumb_count_var)
+
+    def _load_target_album_photos(self):
+        if self.target_album_id is None:
+            return
+        self._load_panel_photos(self._target_panel,
+                                self.target_album_id, self.target_album_name,
+                                self.target_thumb_count_var)
+
+    def _worker_fetch_photos(self, panel: "ThumbnailPanel",
+                             album_id: int, album_name: str,
+                             count_var: tk.StringVar,
+                             on_total, on_progress, on_done):
         try:
             params = DownloadAlbumStructure.load_params()
             client = DownloadAlbumStructure.PiwigoClient(
@@ -1313,16 +1413,14 @@ class PhotosEditor:
                 verify_ssl=params.get("verify_ssl", True),
                 rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
             client.login(params["username"], params["password"])
-            images = client.get_album_images(self.current_album_id)
+            images = client.get_album_images(album_id)
             client.logout()
 
-            self._album_images = images
+            panel.album_images = images
             n = len(images)
-            self.root.after(0, lambda: self.thumb_count_var.set(
-                f"{n} photo{'s' if n != 1 else ''}"))
+            self.root.after(0, lambda: count_var.set(f"{n} photo{'s' if n != 1 else ''}"))
             on_total(n)
 
-            # Log the first image dict so derivative key names are visible in the console
             if images:
                 logger.info(f"Sample image dict keys: {list(images[0].keys())}")
                 logger.info(f"Sample image dict: { {k: v for k, v in images[0].items() if k not in ('derivatives',)} }")
@@ -1330,25 +1428,22 @@ class PhotosEditor:
 
             verify = params.get("verify_ssl", True)
             for idx, img_dict in enumerate(images):
-                self._worker_download_thumb(img_dict, verify)
+                self._worker_download_thumb(panel, img_dict, verify)
                 on_progress(idx + 1, n)
 
             on_done()
             self.root.after(0, lambda: self.set_status(
-                f"Loaded {n} photo{'s' if n != 1 else ''} "
-                f"from \"{self.current_album_name}\""))
+                f"Loaded {n} photo{'s' if n != 1 else ''} from \"{album_name}\""))
         except Exception as e:
             logger.exception("Error fetching photos")
-            on_done()   # always close the dialog
+            on_done()
             self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
             self.root.after(0, lambda e=e: self.set_status(f"Error: {e}"))
 
-    def _worker_download_thumb(self, img_dict: dict, verify: bool):
+    def _worker_download_thumb(self, panel: "ThumbnailPanel", img_dict: dict, verify: bool):
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
             return
         image_id = img_dict.get("id")
-
-        # Try every known derivative size, then fall back to the full image URL
         url = _pick_derivative_url(
             img_dict,
             ("thumb", "square", "small", "2small", "xsmall", "medium", "large"))
@@ -1365,315 +1460,14 @@ class PhotosEditor:
                 resp = requests.get(url, verify=verify, timeout=15)
                 resp.raise_for_status()
             pil = Image.open(BytesIO(resp.content))
-            pil.load()   # fully decode while BytesIO is still in scope
-            # Ensure a mode ImageTk can render
-            if pil.mode not in ("RGB", "RGBA"):
-                pil = pil.convert("RGB")
-            pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
-            self._thumb_cache[image_id] = pil
-            self.root.after(0, lambda iid=image_id, d=img_dict:
-                            self._add_thumb_cell(iid, d))
-        except Exception as e:
-            logger.warning(f"Thumbnail {image_id} ({url}): {e}")
-
-    def _add_thumb_cell(self, image_id: int, img_dict: dict):
-        pil = self._thumb_cache.get(image_id)
-        if pil is None:
-            return
-        tk_img = ImageTk.PhotoImage(pil)
-        self._thumb_tk[image_id] = tk_img   # prevent GC
-
-        name = img_dict.get("name") or img_dict.get("file") or f"#{image_id}"
-
-        cell = tk.Frame(self._grid_frame, bg="#3a3a3a", relief="flat",
-                        padx=2, pady=2, cursor="hand2")
-        img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
-        img_lbl.pack()
-        self._thumb_img_labels[image_id] = img_lbl
-        self._cell_by_id[image_id] = cell
-        name_lbl = tk.Label(cell, text=_truncate(name, 20),
-                            bg="#3a3a3a", fg="#dddddd",
-                            font=("TkDefaultFont", 8), anchor="center",
-                            wraplength=self._thumb_size[0])
-        name_lbl.pack(fill="x")
-
-        # Tooltip: filename + caption
-        def _tip_text(d=img_dict, iid=image_id):
-            parts = []
-            fname = (d.get("file") or d.get("name") or f"#{iid}").strip()
-            if fname:
-                parts.append(fname)
-            caption = (d.get("comment") or "").strip()
-            if caption:
-                parts.append(f"Caption: {caption}")
-            return "\n".join(parts)
-
-        def _show_left_menu(event, iid=image_id, d=img_dict, c=cell):
-            menu = tk.Menu(c, tearoff=0)
-            if iid in self._selected_ids and len(self._selected_ids) > 1:
-                n = len(self._selected_ids)
-                menu.add_command(
-                    label=f"Remove {n} selected from Album",
-                    command=lambda: self._remove_selection_from_album('left'))
-            else:
-                menu.add_command(label="Remove from Album",
-                                 command=lambda: self._remove_from_album(iid, d, 'left'))
-            menu.tk_popup(event.x_root, event.y_root)
-
-        tip = _Tooltip(_tip_text)
-        for w in (cell, img_lbl, name_lbl):
-            w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_cell_press(e, d, c, 'left'))
-            w.bind("<B1-Motion>",       lambda e, d=img_dict, c=cell: self._on_cell_motion(e, d, c, 'left'))
-            w.bind("<ButtonRelease-1>", lambda e, d=img_dict, c=cell: self._on_cell_release(e, d, c, 'left'))
-            w.bind("<Double-Button-1>", lambda e, d=img_dict: self._on_cell_double(d))
-            w.bind("<Enter>",           lambda e, iid=image_id, c=cell: self._on_source_enter(iid, c))
-            w.bind("<Leave>",           lambda e, iid=image_id, c=cell: self._on_source_leave(iid, c))
-            w.bind("<Button-3>",        _show_left_menu)
-            w.bind("<MouseWheel>",      self._on_mousewheel)
-            tip.attach(w)
-
-        self._thumb_cells.append(cell)
-        self._reflow_grid()
-
-    def _clear_thumbnails(self):
-        for cell in self._thumb_cells:
-            cell.destroy()
-        self._thumb_cells.clear()
-        self._thumb_cache.clear()
-        self._thumb_tk.clear()
-        self._thumb_img_labels.clear()
-        self._cell_by_id.clear()
-        self._selected_ids.clear()
-        self._album_images.clear()
-        self._drag_batch.clear()
-        self._thumb_canvas.yview_moveto(0)
-
-    # -----------------------------------------------------------------------
-    # Grid layout
-    # -----------------------------------------------------------------------
-    def _reflow_grid(self):
-        if not self._thumb_cells:
-            return
-        canvas_w = self._thumb_canvas.winfo_width()
-        if canvas_w < 10:
-            canvas_w = self._thumb_size[0] + 20
-        cols = max(1, canvas_w // (self._thumb_size[0] + 16))
-        for idx, cell in enumerate(self._thumb_cells):
-            r, c = divmod(idx, cols)
-            cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
-
-    def _on_grid_resize(self, _event=None):
-        self._thumb_canvas.configure(scrollregion=self._thumb_canvas.bbox("all"))
-
-    def _on_thumb_canvas_resize(self, event):
-        self._thumb_canvas.itemconfigure(self._grid_win, width=event.width)
-        self._reflow_grid()
-
-    def _on_mousewheel(self, event):
-        self._thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-
-    # -----------------------------------------------------------------------
-    # Target album thumbnail loading
-    # -----------------------------------------------------------------------
-    def _load_target_album_photos(self):
-        if self.target_album_id is None:
-            return
-        self._clear_target_thumbnails()
-        self.target_thumb_count_var.set("")
-        self.set_status(f"Fetching photos from \"{self.target_album_name}\"…")
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Downloading Photos")
-        dlg.resizable(False, False)
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
-        dlg_alive = [True]
-        dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
-
-        ttk.Label(dlg, text="Downloading thumbnails from:",
-                  padding=(16, 12, 16, 2)).pack()
-        ttk.Label(dlg, text=self.target_album_name,
-                  font=("TkDefaultFont", 9, "bold"),
-                  padding=(16, 0, 16, 8)).pack()
-        pbar = ttk.Progressbar(dlg, mode="indeterminate", length=360)
-        pbar.pack(padx=16, pady=(0, 4))
-        pbar.start(12)
-        count_var = tk.StringVar(value="Connecting…")
-        ttk.Label(dlg, textvariable=count_var, foreground="gray",
-                  padding=(16, 0, 16, 12)).pack()
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx + (rw - dw) // 2}+{ry + (rh - dh) // 2}")
-
-        def _on_total(n):
-            def _apply():
-                if not dlg_alive[0]: return
-                pbar.stop()
-                pbar.configure(mode="determinate", maximum=max(n, 1))
-                count_var.set(f"0 / {n}")
-            self.root.after(0, _apply)
-
-        def _on_progress(done, total):
-            def _apply():
-                if not dlg_alive[0]: return
-                pbar["value"] = done
-                count_var.set(f"{done} / {total}")
-            self.root.after(0, _apply)
-
-        def _on_done():
-            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
-
-        threading.Thread(
-            target=self._worker_fetch_target_photos,
-            args=(_on_total, _on_progress, _on_done),
-            daemon=True).start()
-
-    def _worker_fetch_target_photos(self, on_total, on_progress, on_done):
-        try:
-            params = DownloadAlbumStructure.load_params()
-            client = DownloadAlbumStructure.PiwigoClient(
-                params["url"], params["username"], params["password"],
-                verify_ssl=params.get("verify_ssl", True),
-                rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-            client.login(params["username"], params["password"])
-            images = client.get_album_images(self.target_album_id)
-            client.logout()
-            self._target_album_images = images
-            n = len(images)
-            self.root.after(0, lambda: self.target_thumb_count_var.set(
-                f"{n} photo{'s' if n != 1 else ''}"))
-            on_total(n)
-            verify = params.get("verify_ssl", True)
-            for idx, img_dict in enumerate(images):
-                self._worker_download_target_thumb(img_dict, verify)
-                on_progress(idx + 1, n)
-            on_done()
-            self.root.after(0, lambda: self.set_status(
-                f"Loaded {n} photo{'s' if n != 1 else ''} from \"{self.target_album_name}\""))
-        except Exception as e:
-            logger.exception("Error fetching target photos")
-            on_done()
-            self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
-
-    def _worker_download_target_thumb(self, img_dict: dict, verify: bool):
-        if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
-            return
-        image_id = img_dict.get("id")
-        url = _pick_derivative_url(
-            img_dict, ("thumb", "square", "small", "2small", "xsmall", "medium", "large"))
-        if not url:
-            url = img_dict.get("element_url", "")
-        if not url:
-            return
-        try:
-            with warnings.catch_warnings():
-                if not verify:
-                    warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-                resp = requests.get(url, verify=verify, timeout=15)
-                resp.raise_for_status()
-            pil = Image.open(BytesIO(resp.content))
             pil.load()
             if pil.mode not in ("RGB", "RGBA"):
                 pil = pil.convert("RGB")
             pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
-            self._target_thumb_cache[image_id] = pil
-            self.root.after(0, lambda iid=image_id, d=img_dict:
-                            self._add_target_thumb_cell(iid, d))
+            panel.thumb_cache[image_id] = pil
+            self.root.after(0, lambda iid=image_id, d=img_dict: panel.add_cell(iid, d))
         except Exception as e:
-            logger.warning(f"Target thumbnail {image_id}: {e}")
-
-    def _add_target_thumb_cell(self, image_id: int, img_dict: dict):
-        pil = self._target_thumb_cache.get(image_id)
-        if pil is None:
-            return
-        tk_img = ImageTk.PhotoImage(pil)
-        self._target_thumb_tk[image_id] = tk_img
-        self._target_cell_by_id[image_id] = None  # set below after cell creation
-
-        name = img_dict.get("name") or img_dict.get("file") or f"#{image_id}"
-        cell = tk.Frame(self._target_grid_frame, bg="#3a3a3a", relief="flat",
-                        padx=2, pady=2, cursor="hand2")
-        self._target_cell_by_id[image_id] = cell
-        img_lbl = tk.Label(cell, image=tk_img, bg="#3a3a3a", cursor="hand2")
-        img_lbl.pack()
-        self._target_thumb_img_labels[image_id] = img_lbl
-        name_lbl = tk.Label(cell, text=_truncate(name, 20),
-                            bg="#3a3a3a", fg="#dddddd",
-                            font=("TkDefaultFont", 8), anchor="center",
-                            wraplength=self._thumb_size[0])
-        name_lbl.pack(fill="x")
-
-        def _tip_text(d=img_dict, iid=image_id):
-            parts = []
-            fname = (d.get("file") or d.get("name") or f"#{iid}").strip()
-            if fname: parts.append(fname)
-            caption = (d.get("comment") or "").strip()
-            if caption: parts.append(f"Caption: {caption}")
-            return "\n".join(parts)
-
-        def _show_right_menu(event, iid=image_id, d=img_dict, c=cell):
-            menu = tk.Menu(c, tearoff=0)
-            if iid in self._target_selected_ids and len(self._target_selected_ids) > 1:
-                n = len(self._target_selected_ids)
-                menu.add_command(
-                    label=f"Remove {n} selected from Album",
-                    command=lambda: self._remove_selection_from_album('right'))
-            else:
-                menu.add_command(label="Remove from Album",
-                                 command=lambda: self._remove_from_album(iid, d, 'right'))
-            menu.tk_popup(event.x_root, event.y_root)
-
-        tip = _Tooltip(_tip_text)
-        for w in (cell, img_lbl, name_lbl):
-            w.bind("<ButtonPress-1>",   lambda e, d=img_dict, c=cell: self._on_cell_press(e, d, c, 'right'))
-            w.bind("<B1-Motion>",       lambda e, d=img_dict, c=cell: self._on_cell_motion(e, d, c, 'right'))
-            w.bind("<ButtonRelease-1>", lambda e, d=img_dict, c=cell: self._on_cell_release(e, d, c, 'right'))
-            w.bind("<Double-Button-1>", lambda e, d=img_dict: self._on_cell_double(d))
-            w.bind("<Enter>",           lambda e, c=cell, iid=image_id: self._on_target_enter(iid, c))
-            w.bind("<Leave>",           lambda e, c=cell, iid=image_id: self._on_target_leave(iid, c))
-            w.bind("<Button-3>",        _show_right_menu)
-            w.bind("<MouseWheel>",      self._on_target_mousewheel)
-            tip.attach(w)
-
-        self._target_thumb_cells.append(cell)
-        self._reflow_target_grid()
-
-    def _clear_target_thumbnails(self):
-        for cell in self._target_thumb_cells:
-            cell.destroy()
-        self._target_thumb_cells.clear()
-        self._target_thumb_cache.clear()
-        self._target_thumb_tk.clear()
-        self._target_thumb_img_labels.clear()
-        self._target_cell_by_id.clear()
-        self._target_selected_ids.clear()
-        self._target_album_images.clear()
-        self._drag_batch.clear()
-
-    def _reflow_target_grid(self):
-        if not self._target_thumb_cells:
-            return
-        canvas_w = self._target_thumb_canvas.winfo_width()
-        if canvas_w < 10:
-            canvas_w = self._thumb_size[0] + 20
-        cols = max(1, canvas_w // (self._thumb_size[0] + 16))
-        for idx, cell in enumerate(self._target_thumb_cells):
-            r, c = divmod(idx, cols)
-            cell.grid(row=r, column=c, padx=4, pady=4, sticky="n")
-
-    def _on_target_grid_resize(self, _event=None):
-        self._target_thumb_canvas.configure(
-            scrollregion=self._target_thumb_canvas.bbox("all"))
-
-    def _on_target_canvas_resize(self, event):
-        self._target_thumb_canvas.itemconfigure(self._target_grid_win, width=event.width)
-        self._reflow_target_grid()
-
-    def _on_target_mousewheel(self, event):
-        self._target_thumb_canvas.yview_scroll(-1 * (event.delta // 120), "units")
+            logger.warning(f"Thumbnail {image_id} ({url}): {e}")
 
     # -----------------------------------------------------------------------
     # Unified thumbnail press / motion / release  (both sides, click + drag)
@@ -1721,13 +1515,13 @@ class PhotosEditor:
         self._drag_is_copy = self._ctrl_held
         image_id = img_dict.get("id")
         if side == 'left':
-            sel_ids = self._selected_ids
-            images   = self._album_images
-            cache    = self._thumb_cache
+            sel_ids = self._source_panel.selected_ids
+            images   = self._source_panel.album_images
+            cache    = self._source_panel.thumb_cache
         else:
-            sel_ids = self._target_selected_ids
-            images   = self._target_album_images
-            cache    = self._target_thumb_cache
+            sel_ids = self._target_panel.selected_ids
+            images   = self._target_panel.album_images
+            cache    = self._target_panel.thumb_cache
 
         if image_id in sel_ids:
             self._drag_batch = [d for d in images if d.get("id") in sel_ids]
@@ -1802,10 +1596,10 @@ class PhotosEditor:
 
         if src_side == 'left':
             dst_album_id = self.target_album_id
-            dst_images   = self._target_album_images
+            dst_images   = self._target_panel.album_images
         else:
             dst_album_id = self.current_album_id
-            dst_images   = self._album_images
+            dst_images   = self._source_panel.album_images
 
         if dst_album_id is None:
             self._drag_batch = []
@@ -1843,14 +1637,14 @@ class PhotosEditor:
     # Selection helpers (symmetric for both sides)
     # -----------------------------------------------------------------------
     def _toggle_side_selection(self, image_id, cell: tk.Frame, side: str):
-        ids = self._selected_ids if side == 'left' else self._target_selected_ids
+        ids = self._source_panel.selected_ids if side == 'left' else self._target_panel.selected_ids
         if image_id in ids:
             ids.discard(image_id)
             self._apply_cell_bg(cell, selected=False)
         else:
             ids.add(image_id)
             self._apply_cell_bg(cell, selected=True)
-        total = len(self._selected_ids) + len(self._target_selected_ids)
+        total = len(self._source_panel.selected_ids) + len(self._target_panel.selected_ids)
         self.set_status(f"{total} photo{'s' if total != 1 else ''} selected" if total else "Ready")
 
     def _apply_cell_bg(self, cell: tk.Frame, selected: bool):
@@ -1865,35 +1659,19 @@ class PhotosEditor:
         except Exception:
             pass
 
-    def _on_source_enter(self, image_id, cell: tk.Frame):
-        if image_id not in self._selected_ids:
-            cell.configure(bg="#5a5a5a", relief="raised")
-
-    def _on_source_leave(self, image_id, cell: tk.Frame):
-        if image_id not in self._selected_ids:
-            cell.configure(bg="#3a3a3a", relief="flat")
-
-    def _on_target_enter(self, image_id, cell: tk.Frame):
-        if image_id not in self._target_selected_ids:
-            cell.configure(bg="#5a5a5a", relief="raised")
-
-    def _on_target_leave(self, image_id, cell: tk.Frame):
-        if image_id not in self._target_selected_ids:
-            cell.configure(bg="#3a3a3a", relief="flat")
-
     def _clear_side_selection(self, side: str):
         if side == 'left':
-            for iid in list(self._selected_ids):
-                cell = self._cell_by_id.get(iid)
+            for iid in list(self._source_panel.selected_ids):
+                cell = self._source_panel.cell_by_id.get(iid)
                 if cell:
                     self._apply_cell_bg(cell, selected=False)
-            self._selected_ids.clear()
+            self._source_panel.selected_ids.clear()
         else:
-            for iid in list(self._target_selected_ids):
-                cell = self._target_cell_by_id.get(iid)
+            for iid in list(self._target_panel.selected_ids):
+                cell = self._target_panel.cell_by_id.get(iid)
                 if cell:
                     self._apply_cell_bg(cell, selected=False)
-            self._target_selected_ids.clear()
+            self._target_panel.selected_ids.clear()
 
     def _clear_selection(self):
         self._clear_side_selection('left')
@@ -1932,7 +1710,7 @@ class PhotosEditor:
         while w is not None:
             if w == self._target_frame:
                 return 'right'
-            if w == self._thumb_panel_frame:
+            if w == self._source_panel.frame:
                 return 'left'
             try:
                 w = w.master
@@ -1960,14 +1738,14 @@ class PhotosEditor:
     def _hit_tree_node(self, event) -> tuple | None:
         """Return (album_id, fullname, side) if the event lands on a tree row, else None."""
         widget = self.root.winfo_containing(event.x_root, event.y_root)
-        if widget is self._source_hierarchy_tree:
-            tree = self._source_hierarchy_tree
+        if widget is self._source_panel.tree:
+            tree = self._source_panel.tree
             side = 'left'
-            fullname_map = self._source_tree_fullname_by_iid
-        elif widget is self._hierarchy_tree:
-            tree = self._hierarchy_tree
+            fullname_map = self._source_panel.tree_fullname_by_iid
+        elif widget is self._target_panel.tree:
+            tree = self._target_panel.tree
             side = 'right'
-            fullname_map = self._tree_fullname_by_iid
+            fullname_map = self._target_panel.tree_fullname_by_iid
         else:
             return None
         y = event.y_root - tree.winfo_rooty()
@@ -2164,11 +1942,11 @@ class PhotosEditor:
     def _remove_selection_from_album(self, side: str):
         """Remove all selected images on `side` from their album."""
         if side == 'left':
-            ids    = set(self._selected_ids)
-            images = self._album_images
+            ids    = set(self._source_panel.selected_ids)
+            images = self._source_panel.album_images
         else:
-            ids    = set(self._target_selected_ids)
-            images = self._target_album_images
+            ids    = set(self._target_panel.selected_ids)
+            images = self._target_panel.album_images
         if not ids:
             return
         batch = [d for d in images if d.get("id") in ids]
@@ -2255,23 +2033,14 @@ class PhotosEditor:
         threading.Thread(target=worker, daemon=True).start()
 
     def _after_remove(self, image_id: int, name: str, side: str):
-        if side == 'left':
-            cell = self._cell_by_id.pop(image_id, None)
-            if cell:
-                self._thumb_cells = [c for c in self._thumb_cells if c != cell]
-                cell.destroy()
-            self._selected_ids.discard(image_id)
-            self._album_images = [d for d in self._album_images if d.get("id") != image_id]
-            self._reflow_grid()
-        else:
-            cell = self._target_cell_by_id.pop(image_id, None)
-            if cell:
-                self._target_thumb_cells = [c for c in self._target_thumb_cells if c != cell]
-                cell.destroy()
-            self._target_selected_ids.discard(image_id)
-            self._target_album_images = [
-                d for d in self._target_album_images if d.get("id") != image_id]
-            self._reflow_target_grid()
+        panel = self._source_panel if side == 'left' else self._target_panel
+        cell = panel.cell_by_id.pop(image_id, None)
+        if cell:
+            panel.thumb_cells = [c for c in panel.thumb_cells if c != cell]
+            cell.destroy()
+        panel.selected_ids.discard(image_id)
+        panel.album_images = [d for d in panel.album_images if d.get("id") != image_id]
+        panel.reflow()
         self.set_status(f'Removed "{name}" from album.')
 
     # -----------------------------------------------------------------------
@@ -2518,18 +2287,8 @@ class PhotosEditor:
             pil = pil.convert("RGB")
         pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
         tk_img = ImageTk.PhotoImage(pil)
-        # Left (source) grid
-        img_lbl = self._thumb_img_labels.get(image_id)
-        if img_lbl is not None:
-            self._thumb_cache[image_id] = pil
-            self._thumb_tk[image_id] = tk_img
-            img_lbl.configure(image=tk_img)
-        # Right (target) grid
-        target_lbl = self._target_thumb_img_labels.get(image_id)
-        if target_lbl is not None:
-            self._target_thumb_cache[image_id] = pil
-            self._target_thumb_tk[image_id] = tk_img
-            target_lbl.configure(image=tk_img)
+        self._source_panel.update_thumbnail(image_id, pil, tk_img)
+        self._target_panel.update_thumbnail(image_id, pil, tk_img)
 
     def _revert_photo(self):
         """Reload the current photo from Piwigo, discarding unsaved edits."""
