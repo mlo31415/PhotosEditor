@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import json
+import tempfile
 import threading
 import logging
 import warnings
@@ -2181,7 +2182,6 @@ class PhotosEditor:
         image_id     = img_dict.get("id")   # None for brand-new uploads
 
         def worker():
-            import tempfile as _tmp
             temp_path = None
             try:
                 params = DownloadAlbumStructure.load_params()
@@ -2190,7 +2190,7 @@ class PhotosEditor:
                 set_stage("Saving edited image…")
                 stem, ext = os.path.splitext(fname)
                 suffix = ext if ext.lower() in ('.jpg', '.jpeg') else '.jpg'
-                with _tmp.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
                     temp_path = tf.name
                 img = pil_snapshot
                 if img.mode not in ('RGB', 'L'):
