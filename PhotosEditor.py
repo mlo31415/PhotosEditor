@@ -569,6 +569,7 @@ class PhotosEditor:
         self._viewer_tk:           ImageTk.PhotoImage | None = None
         self._current_image_dict:  dict | None = None
         self._caption_editor_open: bool  = False
+        self._photo_edited:        bool  = False  # unsaved edits since last load/upload
         self._crop_start:          tuple | None = None
         self._crop_rect_id:        int   | None = None
         self._photo_display_rect:  tuple | None = None  # (x0,y0,x1,y1) on canvas
@@ -722,6 +723,15 @@ class PhotosEditor:
         self._on_thumb_click(img_dict)
 
     def _close_editor_dialog(self):
+        if self._photo_edited:
+            name = (self._current_image_dict or {}).get("file") or \
+                   (self._current_image_dict or {}).get("name") or "this photo"
+            if not messagebox.askyesno(
+                    "Unsaved Edits",
+                    f'"{name}" has been edited but not uploaded to Piwigo.\n\n'
+                    "Close without uploading?",
+                    icon="warning", parent=self._editor_dlg):
+                return
         # Persist the dialog's current geometry so it reopens in the same spot.
         self._state["editor_geometry"] = self._editor_dlg.geometry()
         _save_state(self._state)
@@ -2075,6 +2085,7 @@ class PhotosEditor:
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
         self._current_image_dict = img_dict
+        self._photo_edited       = False
         self._edit_history.clear()
         self._set_restoration_base()
         self._clear_crop_rect()
@@ -2225,6 +2236,7 @@ class PhotosEditor:
 
                 def finish_ok():
                     close_dlg()
+                    self._photo_edited = False
                     self._refresh_current_thumbnail()
                     self.set_status(f"Uploaded: {fname}")
                     self._close_editor_dialog()
@@ -2281,6 +2293,7 @@ class PhotosEditor:
             img = img.convert("RGB")
         # PIL rotates counter-clockwise, so negate for clockwise behaviour
         self._viewer_image = img.rotate(-degrees, expand=True)
+        self._photo_edited = True
         self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
@@ -2389,6 +2402,7 @@ class PhotosEditor:
         self._edit_history.append(self._viewer_image.copy())
         self.undo_btn.config(state="normal")
         self._viewer_image = self._viewer_image.crop((ix0, iy0, ix1, iy1))
+        self._photo_edited = True
         self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
