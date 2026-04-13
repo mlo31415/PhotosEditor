@@ -2454,6 +2454,7 @@ class PhotosEditor:
         if gen != self._restore_generation:
             return   # stale — a newer slider move is already in flight
         self._viewer_image = result
+        self._photo_edited = True
         self._display_photo()
 
     def _reset_restoration(self):
