@@ -73,7 +73,7 @@ except ImportError as _e:
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
@@ -1414,11 +1414,6 @@ class PhotosEditor:
             n = len(images)
             self.root.after(0, lambda: count_var.set(f"{n} photo{'s' if n != 1 else ''}"))
             on_total(n)
-
-            if images:
-                logger.info(f"Sample image dict keys: {list(images[0].keys())}")
-                logger.info(f"Sample image dict: { {k: v for k, v in images[0].items() if k not in ('derivatives',)} }")
-                logger.info(f"Sample derivatives: {list(images[0].get('derivatives', {}).keys())}")
 
             verify = params.get("verify_ssl", True)
             for idx, img_dict in enumerate(images):
