@@ -4,10 +4,10 @@ A GUI application for browsing and editing photos from a Piwigo album.
 
 Left panel  – Scrollable thumbnail grid of photos in the selected album.
 Right panel – Photo Editor: full-size display + Custom Fields (no EXIF section),
-              modelled closely on the Photo Viewer in PhotosUploader.
+              modeled closely on the Photo Viewer in PhotosUploader.
 
 Requires: pip install Pillow requests
-Shares DownloadAlbumStructure.py with ../PhotosUploader.
+Shares DownloadAlbumStructure.py in ../PiwigoHelpers with ../PhotosUploader.
 """
 
 import os
@@ -45,23 +45,29 @@ except ImportError:
     CV2_AVAILABLE = False
     print("WARNING: opencv-python not installed.  Run: pip install opencv-python")
 
+
 # ---------------------------------------------------------------------------
 # Locate and import the shared DownloadAlbumStructure module
 # ---------------------------------------------------------------------------
-_SCRIPT_DIR   = Path(__file__).resolve().parent
-_UPLOADER_DIR = _SCRIPT_DIR.parent / "PhotosUploader"
+# When frozen by PyInstaller, __file__ is inside the read-only _MEIPASS temp
+# dir.  Use sys.executable (the .exe path) to get the writable install dir.
+import sys as _sys
+if getattr(_sys, "frozen", False):
+    _SCRIPT_DIR = Path(_sys.executable).resolve().parent
+else:
+    _SCRIPT_DIR = Path(__file__).resolve().parent
 
-if str(_UPLOADER_DIR) not in sys.path:
-    sys.path.insert(0, str(_UPLOADER_DIR))
+_PIWIGO_HELPERS = _SCRIPT_DIR.parent / "PiwigoHelpers"
+
+if str(_PIWIGO_HELPERS) not in sys.path:
+    sys.path.insert(0, str(_PIWIGO_HELPERS))
 
 try:
     import DownloadAlbumStructure
-    # Override the params-file path so it resolves relative to PhotosUploader,
-    # not the current working directory.
-    DownloadAlbumStructure.PARAMS_FILE = _UPLOADER_DIR / "PhotosUploader Params.json"
+    # Override the params-file path to the exe/script's own directory.
+    DownloadAlbumStructure.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
-    sys.exit(f"Cannot import DownloadAlbumStructure from {_UPLOADER_DIR}:\n{_e}")
-
+    sys.exit(f"Cannot import DownloadAlbumStructure from {_PIWIGO_HELPERS}:\n{_e}")
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -89,7 +95,6 @@ CUSTOM_FIELDS = [
 THUMB_DISPLAY_SIZE = (144, 144)   # fallback; overridden at runtime to 1.5 in
 VIEWER_FETCH_SIZE  = "medium"        # Piwigo derivative used in the editor canvas
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -963,7 +968,7 @@ class PhotosEditor:
                 self.root.after(0, self._populate_hierarchy_tree)
             except Exception as e:
                 logger.warning(f"Could not refresh album hierarchy: {e}")
-                self.root.after(0, lambda: self.set_status(
+                self.root.after(0, lambda e=e: self.set_status(
                     f"Hierarchy refresh failed: {e}"))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1207,7 +1212,7 @@ class PhotosEditor:
                     client.logout()
                     self.root.after(0, lambda: _done(new_id, name))
                 except Exception as e:
-                    self.root.after(0, lambda: _error(str(e)))
+                    self.root.after(0, lambda e=e: _error(str(e)))
 
             def _done(new_id: int, album_name: str):
                 dlg.destroy()
@@ -1358,8 +1363,8 @@ class PhotosEditor:
         except Exception as e:
             logger.exception("Error fetching photos")
             on_done()   # always close the dialog
-            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
-            self.root.after(0, lambda: self.set_status(f"Error: {e}"))
+            self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
+            self.root.after(0, lambda e=e: self.set_status(f"Error: {e}"))
 
     def _worker_download_thumb(self, img_dict: dict, verify: bool):
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
@@ -1575,7 +1580,7 @@ class PhotosEditor:
         except Exception as e:
             logger.exception("Error fetching target photos")
             on_done()
-            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
 
     def _worker_download_target_thumb(self, img_dict: dict, verify: bool):
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
@@ -3127,7 +3132,6 @@ def main():
     root = tk.Tk()
     PhotosEditor(root)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
