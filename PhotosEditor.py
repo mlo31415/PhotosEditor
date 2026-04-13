@@ -2321,6 +2321,7 @@ class PhotosEditor:
         self._display_photo()
         if not self._edit_history:
             self.undo_btn.config(state="disabled")
+            self._photo_edited = False
         self.set_status("Undo applied.")
 
     def _on_crop_start(self, event):
