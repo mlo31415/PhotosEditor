@@ -579,7 +579,7 @@ class PhotosEditor:
         self._field_links:   list = []
         self.persist_vars:   dict = {}
         self._exif_data:     dict = {}   # kept for field-link machinery
-        self._field_validity = {'date': False, 'caption': False, 'filename': False}
+        self._field_validity = {'date': False, 'caption': False}
 
         # ── tk variables ────────────────────────────────────────────────────
         self.status_var           = tk.StringVar(value="Ready")
