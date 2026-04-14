@@ -1015,7 +1015,7 @@ class PhotosEditor:
 
     def _on_f5_refresh(self, _event=None):
         self._load_album_photos()
-        if self.target_album_id is not None:
+        if not self._zoomed and self.target_album_id is not None:
             self._load_target_album_photos()
 
     def _toggle_zoom(self):
