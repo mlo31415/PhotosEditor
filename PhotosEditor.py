@@ -68,8 +68,12 @@ except ImportError as _e:
     import tkinter as _tk
     import tkinter.messagebox as _mb
     _tk.Tk().withdraw()
+    _frozen = getattr(sys, "frozen", False)
+    _hint = ("This is a packaging error — please report it to the developer."
+             if _frozen else
+             f"Expected to find it in:\n{_PIWIGO_HELPERS}\n\nEnsure the PiwigoHelpers folder is a sibling of the PhotosEditor folder.")
     _mb.showerror("Startup Error",
-                  f"Cannot import DownloadAlbumStructure from:\n{_PIWIGO_HELPERS}\n\n{_e}")
+                  f"Cannot import DownloadAlbumStructure.\n\n{_hint}\n\nDetail: {_e}")
     sys.exit(1)
 # ---------------------------------------------------------------------------
 # Logging
@@ -110,8 +114,8 @@ def _opencv_restore(pil_img: "Image.Image",
     if red_cast > 0:
         t = red_cast / 100.0
         img[:, :, 0] = np.clip(img[:, :, 0] * (1.0 - t * 0.50), 0, 255)  # R ↓
-        img[:, :, 1] = np.clip(img[:, :, 1] * (1.0 + t * 0.10), 0, 255)  # G ↑ slight
-        img[:, :, 2] = np.clip(img[:, :, 2] * (1.0 + t * 0.40), 0, 255)  # B ↑
+        img[:, :, 1] = np.clip(img[:, :, 1] * (1.0 + t * 0.05), 0, 255)  # G ↑ slight
+        img[:, :, 2] = np.clip(img[:, :, 2] * (1.0 + t * 0.30), 0, 255)  # B ↑
 
     # 2. Exposure + Contrast ─────────────────────────────────────────────────
     #    alpha: 0.5 … 2.5   beta: −100 … +100
