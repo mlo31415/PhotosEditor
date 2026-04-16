@@ -300,6 +300,7 @@ class ThumbnailPanel:
         self.img_labels:   dict = {}   # image_id → tk.Label
         self.cell_by_id:   dict = {}   # image_id → tk.Frame
         self.selected_ids: set  = set()
+        self.shown_album_id: "int | None" = None
 
         # Tree state (populated by PhotosEditor)
         self.tree_all_items:       list = []
@@ -1478,6 +1479,7 @@ class PhotosEditor:
             client.logout()
 
             panel.album_images = images
+            panel.shown_album_id = album_id
             n = len(images)
             self.root.after(0, lambda: count_var.set(f"{n} photo{'s' if n != 1 else ''}"))
             on_total(n)
@@ -1864,7 +1866,8 @@ class PhotosEditor:
                             if new_cats != original_cats:
                                 client.set_image_categories(image_id, new_cats)
                         undo_items.append({'image_id': image_id, 'name': name,
-                                           'original_cats': original_cats})
+                                           'original_cats': original_cats,
+                                           'img_dict': d})
                         n_ok += 1
                     except Exception as e:
                         errors.append(f"{name}: {e}")
@@ -1888,13 +1891,93 @@ class PhotosEditor:
                     f"{op.capitalize()} complete: {n_ok} ok"
                     + (f", {len(errors)} error(s)" if errors else ".")
                     + ("  (Ctrl+Z to undo)" if undo_items else ""))
-                self._load_album_photos()
-                if self.target_album_id is not None:
-                    self._load_target_album_photos()
+                self._apply_move_copy_locally(undo_items, op, src_side, src_album_id, dst_album_id)
 
             self.root.after(0, finish)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _adjust_tree_count(tree, album_id: int, delta: int):
+        """Walk album_id and all its ancestors in tree, adjusting the displayed count by delta."""
+        import re
+        iid = str(album_id)
+        while iid and tree.exists(iid):
+            text = tree.item(iid, "text")
+            m = re.match(r'^(.*)\s+\((\d[\d,]*)\)$', text)
+            if m:
+                name  = m.group(1)
+                count = int(m.group(2).replace(",", "")) + delta
+                count = max(0, count)
+                tree.item(iid, text=f"{name}  ({count:,})")
+            iid = tree.parent(iid)
+
+    def _apply_move_copy_locally(self, succeeded: list, op: str,
+                                 src_side: str, src_album_id: int, dst_album_id: int):
+        """Update panels in-place after a successful move/copy; fall back to full reload if needed."""
+        src_panel = self._source_panel if src_side == 'left' else self._target_panel
+        dst_panel = self._target_panel if src_side == 'left' else self._source_panel
+
+        # Determine whether we can update each panel locally
+        src_ok = (src_panel.shown_album_id == src_album_id)
+        dst_ok = (dst_panel.shown_album_id == dst_album_id)
+
+        if not src_ok and not dst_ok:
+            # Can't do anything locally — fall back
+            self._load_album_photos()
+            if self.target_album_id is not None:
+                self._load_target_album_photos()
+            return
+
+        for item in succeeded:
+            image_id = item['image_id']
+            img_dict = item['img_dict']
+
+            # Remove from source panel on move
+            if op == 'move' and src_ok:
+                cell = src_panel.cell_by_id.pop(image_id, None)
+                if cell:
+                    src_panel.thumb_cells = [c for c in src_panel.thumb_cells if c != cell]
+                    cell.destroy()
+                src_panel.selected_ids.discard(image_id)
+                src_panel.album_images = [d for d in src_panel.album_images
+                                          if d.get("id") != image_id]
+
+            # Add to destination panel (move or copy)
+            if dst_ok and image_id not in dst_panel.cell_by_id:
+                dst_panel.album_images.append(img_dict)
+                # Copy cached thumbnail from source panel if available
+                if image_id not in dst_panel.thumb_cache and image_id in src_panel.thumb_cache:
+                    dst_panel.thumb_cache[image_id] = src_panel.thumb_cache[image_id]
+                dst_panel.add_cell(image_id, img_dict)
+
+        if src_ok:
+            src_panel.reflow()
+            n = len(src_panel.album_images)
+            if src_panel is self._source_panel:
+                self.thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
+            else:
+                self.target_thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
+        else:
+            self._load_album_photos()
+
+        if dst_ok:
+            dst_panel.reflow()
+            n = len(dst_panel.album_images)
+            if dst_panel is self._target_panel:
+                self.target_thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
+            else:
+                self.thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
+        elif self.target_album_id is not None:
+            self._load_target_album_photos()
+
+        # Update album counts in both trees
+        n = len(succeeded)
+        if n:
+            for panel in (self._source_panel, self._target_panel):
+                if op == 'move':
+                    self._adjust_tree_count(panel.tree, src_album_id, -n)
+                self._adjust_tree_count(panel.tree, dst_album_id, +n)
 
     # -----------------------------------------------------------------------
     # Undo last drag-and-drop operation
