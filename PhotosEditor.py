@@ -179,9 +179,10 @@ class _Tooltip:
         if not self._widgets:
             self._root = widget
         self._widgets.append(widget)
-        widget.bind("<Enter>",       self._on_enter,       add="+")
-        widget.bind("<Leave>",       self._on_leave,       add="+")
-        widget.bind("<ButtonPress>", self._cancel_and_hide, add="+")
+        widget.bind("<Enter>",       self._on_enter,          add="+")
+        widget.bind("<Leave>",       self._on_leave,          add="+")
+        widget.bind("<ButtonPress>", self._cancel_and_hide,   add="+")
+        widget.bind("<Destroy>",     self._on_widget_destroy, add="+")
 
     def _coords_inside_group(self, wx: int, wy: int) -> bool:
         """Return True if screen point (wx, wy) falls inside any attached widget."""
@@ -211,12 +212,22 @@ class _Tooltip:
                 pass
         self._cancel_and_hide()
 
+    def _on_widget_destroy(self, event=None):
+        if event is not None:
+            # Remove only the specific widget that fired <Destroy>.
+            # (<Destroy> propagates up, so event.widget may be a child of self._root.)
+            self._widgets = [w for w in self._widgets if w is not event.widget]
+            if event.widget is self._root:
+                self._root = self._widgets[0] if self._widgets else None
+        self._cancel_and_hide()
+
     def _cancel(self):
-        if self._after_id and self._root:
-            try:
-                self._root.after_cancel(self._after_id)
-            except Exception:
-                pass
+        if self._after_id:
+            if self._root:
+                try:
+                    self._root.after_cancel(self._after_id)
+                except Exception:
+                    pass
             self._after_id = None
 
     def _cancel_and_hide(self, _event=None):
