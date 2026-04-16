@@ -562,6 +562,7 @@ class PhotosEditor:
         self._drag_source_side:     str         = 'left' # 'left' | 'right'
         self._drag_window:          tk.Toplevel | None = None
         self._drag_tk_ref:          "ImageTk.PhotoImage | None" = None
+        self._drag_op_label:        "tk.Label | None" = None
         self._press_pos:            tuple | None = None
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
@@ -1546,6 +1547,16 @@ class PhotosEditor:
         if self._drag_window:
             self._drag_window.wm_geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
             self._update_drag_hover_label(event)
+            # Re-evaluate copy vs move as Ctrl may have been released since drag started
+            is_copy = self._ctrl_held
+            if is_copy != self._drag_is_copy:
+                self._drag_is_copy = is_copy
+                if self._drag_op_label is not None:
+                    n = len(self._drag_batch)
+                    txt = "COPY" if is_copy else "MOVE"
+                    if n > 1:
+                        txt += f"  \u00d7{n}"
+                    self._drag_op_label.configure(text=txt)
 
     def _on_cell_release(self, event, img_dict: dict, cell: tk.Frame, side: str):
         was_drag = self._drag_window is not None
@@ -1555,6 +1566,8 @@ class PhotosEditor:
         self._press_pos = None
 
         if was_drag:
+            self._drag_is_copy = self._ctrl_held  # final check: Ctrl held at drop = copy
+            self._drag_op_label = None
             self._execute_drop(event)
         elif self._double_click_pending:
             self._double_click_pending = False   # swallow the spurious 2nd release
@@ -1601,8 +1614,9 @@ class PhotosEditor:
         label_text = "COPY" if self._drag_is_copy else "MOVE"
         if n > 1:
             label_text += f"  \u00d7{n}"
-        tk.Label(win, text=label_text, bg="#add8e6",
-                 font=("TkDefaultFont", 8, "bold")).pack()
+        self._drag_op_label = tk.Label(win, text=label_text, bg="#add8e6",
+                                       font=("TkDefaultFont", 8, "bold"))
+        self._drag_op_label.pack()
         self._drag_hover_label = tk.Label(win, text="", bg="#fffacd",
                                           font=("TkDefaultFont", 8, "italic"),
                                           padx=4, pady=2)
