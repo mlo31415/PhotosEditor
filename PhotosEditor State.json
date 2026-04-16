@@ -1,8 +1,9 @@
 {
   "geometry": "1920x1009+-1930+151",
   "sash": 954,
-  "album_id": 667,
-  "album_name": "Worldcons / Chicon 7 (2012) / Setup",
-  "target_album_id": 668,
-  "target_album_name": "Worldcons / Chicon 7 (2012) / People"
+  "album_id": 680,
+  "album_name": "Worldcons / MagiCon (1992) / Masquerade",
+  "target_album_id": 429,
+  "target_album_name": "Worldcons / MagiCon (1992)",
+  "editor_geometry": "900x815+-1283+191"
 }
