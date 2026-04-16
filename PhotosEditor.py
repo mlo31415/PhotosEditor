@@ -1881,7 +1881,7 @@ class PhotosEditor:
                     f"{op.capitalize()} complete: {n_ok} ok"
                     + (f", {len(errors)} error(s)" if errors else ".")
                     + ("  (Ctrl+Z to undo)" if undo_items else ""))
-                self._apply_move_copy_locally(undo_items, op, src_side, src_album_id, dst_album_id)
+                self._apply_move_copy_locally(undo_items, op, src_album_id, dst_album_id)
 
             self.root.after(0, finish)
 
@@ -1903,17 +1903,18 @@ class PhotosEditor:
             iid = tree.parent(iid)
 
     def _apply_move_copy_locally(self, succeeded: list, op: str,
-                                 src_side: str, src_album_id: int, dst_album_id: int):
-        """Update panels in-place after a successful move/copy; fall back to full reload if needed."""
-        src_panel = self._source_panel if src_side == 'left' else self._target_panel
-        dst_panel = self._target_panel if src_side == 'left' else self._source_panel
+                                 src_album_id: int, dst_album_id: int):
+        """Update panels in-place after a successful move/copy; fall back to full reload if needed.
 
-        # Determine whether we can update each panel locally
-        src_ok = (src_panel.shown_album_id == src_album_id)
-        dst_ok = (dst_panel.shown_album_id == dst_album_id)
+        Panels are identified by which album they are currently displaying (shown_album_id),
+        so this works regardless of which side is source or destination.
+        """
+        all_panels = (self._source_panel, self._target_panel)
 
-        if not src_ok and not dst_ok:
-            # Can't do anything locally — fall back
+        src_panel = next((p for p in all_panels if p.shown_album_id == src_album_id), None)
+        dst_panel = next((p for p in all_panels if p.shown_album_id == dst_album_id), None)
+
+        if src_panel is None and dst_panel is None:
             self._load_album_photos()
             if self.target_album_id is not None:
                 self._load_target_album_photos()
@@ -1924,7 +1925,7 @@ class PhotosEditor:
             img_dict = item['img_dict']
 
             # Remove from source panel on move
-            if op == 'move' and src_ok:
+            if op == 'move' and src_panel is not None:
                 cell = src_panel.cell_by_id.pop(image_id, None)
                 if cell:
                     src_panel.thumb_cells = [c for c in src_panel.thumb_cells if c != cell]
@@ -1934,37 +1935,36 @@ class PhotosEditor:
                                           if d.get("id") != image_id]
 
             # Add to destination panel (move or copy)
-            if dst_ok and image_id not in dst_panel.cell_by_id:
+            if dst_panel is not None and image_id not in dst_panel.cell_by_id:
                 dst_panel.album_images.append(img_dict)
-                # Copy cached thumbnail from source panel if available
-                if image_id not in dst_panel.thumb_cache and image_id in src_panel.thumb_cache:
+                # Reuse cached thumbnail from source panel if available
+                if (src_panel is not None
+                        and image_id not in dst_panel.thumb_cache
+                        and image_id in src_panel.thumb_cache):
                     dst_panel.thumb_cache[image_id] = src_panel.thumb_cache[image_id]
                 dst_panel.add_cell(image_id, img_dict)
 
-        if src_ok:
-            src_panel.reflow()
-            n = len(src_panel.album_images)
-            if src_panel is self._source_panel:
-                self.thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
-            else:
-                self.target_thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
-        else:
-            self._load_album_photos()
+        def _reflow_panel(panel):
+            panel.reflow()
+            n = len(panel.album_images)
+            count_var = (self.thumb_count_var if panel is self._source_panel
+                         else self.target_thumb_count_var)
+            count_var.set(f"{n} photo{'s' if n != 1 else ''}")
 
-        if dst_ok:
-            dst_panel.reflow()
-            n = len(dst_panel.album_images)
-            if dst_panel is self._target_panel:
-                self.target_thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
-            else:
-                self.thumb_count_var.set(f"{n} photo{'s' if n != 1 else ''}")
-        elif self.target_album_id is not None:
-            self._load_target_album_photos()
+        if src_panel is not None and op == 'move':
+            _reflow_panel(src_panel)
+        elif src_panel is None and op == 'move':
+            self._load_album_photos()
+            if self.target_album_id is not None:
+                self._load_target_album_photos()
+
+        if dst_panel is not None:
+            _reflow_panel(dst_panel)
 
         # Update album counts in both trees
         n = len(succeeded)
         if n:
-            for panel in (self._source_panel, self._target_panel):
+            for panel in all_panels:
                 if op == 'move':
                     self._adjust_tree_count(panel.tree, src_album_id, -n)
                 self._adjust_tree_count(panel.tree, dst_album_id, +n)
