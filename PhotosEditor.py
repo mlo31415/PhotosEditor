@@ -1642,16 +1642,6 @@ class PhotosEditor:
             if src_album_id is not None and dst_album_id == src_album_id:
                 self._drag_batch = []
                 return
-            # Update the destination panel's selected album so the reload
-            # after the operation shows the right content.
-            if dst_side == 'right':
-                self.target_album_id   = dst_album_id
-                self.target_album_name = dst_album_name
-                self.target_album_var.set(dst_album_name)
-            else:
-                self.current_album_id   = dst_album_id
-                self.current_album_name = dst_album_name
-                self.album_var.set(dst_album_name)
             batch = list(self._drag_batch)
             self._drag_batch = []
             self._execute_move_copy(batch, op, src_side, src_album_id, dst_album_id)
