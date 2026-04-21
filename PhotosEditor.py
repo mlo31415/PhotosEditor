@@ -546,7 +546,7 @@ class PhotosEditor:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("PhotosEditor")
+        self.root.title("FANAC.org Photos Editor")
         self.root.geometry("1400x820")
         self.root.minsize(800, 500)
 
@@ -2140,6 +2140,19 @@ class PhotosEditor:
         panel.selected_ids.discard(image_id)
         panel.album_images = [d for d in panel.album_images if d.get("id") != image_id]
         panel.reflow()
+
+        # Update the panel count label
+        n = len(panel.album_images)
+        count_var = (self.thumb_count_var if panel is self._source_panel
+                     else self.target_thumb_count_var)
+        count_var.set(f"{n} photo{'s' if n != 1 else ''}")
+
+        # Update tree counts in both panels
+        album_id = panel.shown_album_id
+        if album_id is not None:
+            for p in (self._source_panel, self._target_panel):
+                self._adjust_tree_count(p.tree, album_id, -1)
+
         self.set_status(f'Removed "{name}" from album.')
 
     # -----------------------------------------------------------------------
