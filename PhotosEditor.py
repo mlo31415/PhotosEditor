@@ -7,7 +7,7 @@ Right panel – Photo Editor: full-size display + Custom Fields (no EXIF section
               modeled closely on the Photo Viewer in PhotosUploader.
 
 Requires: pip install Pillow requests
-Shares DownloadAlbumStructure.py in ../PiwigoHelpers with ../PhotosUploader.
+Shares AlbumHierarchy.py in ../PiwigoHelpers with ../PhotosUploader.
 """
 
 import os
@@ -46,7 +46,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Locate and import the shared DownloadAlbumStructure module
+# Locate and import the shared AlbumHierarchy module
 # ---------------------------------------------------------------------------
 # When frozen by PyInstaller, __file__ is inside the read-only _MEIPASS temp
 # dir.  Use sys.executable (the .exe path) to get the writable install dir.
@@ -61,9 +61,10 @@ if str(_PIWIGO_HELPERS) not in sys.path:
     sys.path.insert(0, str(_PIWIGO_HELPERS))
 
 try:
-    import DownloadAlbumStructure
+    import AlbumHierarchy
+    import TagHandler
     # Override the params-file path to the exe/script's own directory.
-    DownloadAlbumStructure.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
+    AlbumHierarchy.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
     import tkinter as _tk
     import tkinter.messagebox as _mb
@@ -73,7 +74,7 @@ except ImportError as _e:
              if _frozen else
              f"Expected to find it in:\n{_PIWIGO_HELPERS}\n\nEnsure the PiwigoHelpers folder is a sibling of the PhotosEditor folder.")
     _mb.showerror("Startup Error",
-                  f"Cannot import DownloadAlbumStructure.\n\n{_hint}\n\nDetail: {_e}")
+                  f"Cannot import AlbumHierarchy.\n\n{_hint}\n\nDetail: {_e}")
     sys.exit(1)
 # ---------------------------------------------------------------------------
 # Logging
@@ -1101,14 +1102,14 @@ class PhotosEditor:
 
         def worker():
             try:
-                params = DownloadAlbumStructure.load_params()
-                client = DownloadAlbumStructure.PiwigoClient(
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=params.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get(
                         "rate_limit_calls_per_second", 2.0))
                 client.login(params["username"], params["password"])
-                n = DownloadAlbumStructure._fetch_and_save_hierarchy(
+                n = AlbumHierarchy._fetch_and_save_hierarchy(
                     client, lambda msg: self.root.after(0, lambda m=msg: self.set_status(m)))
                 client.logout()
                 self.root.after(0, lambda: self.set_status(
@@ -1179,7 +1180,7 @@ class PhotosEditor:
         attributes holding the currently selected album for that panel.
         """
         try:
-            hier_file = DownloadAlbumStructure._album_hierarchy_file()
+            hier_file = AlbumHierarchy._album_hierarchy_file()
             if not hier_file.exists():
                 return
             with open(hier_file, encoding="utf-8") as f:
@@ -1256,19 +1257,33 @@ class PhotosEditor:
         )
 
     def _on_tree_rmb(self, event, tree: ttk.Treeview, fullname_map: dict):
-        """Right-click on either hierarchy tree — offer 'Add sub-album'."""
+        """Right-click on either hierarchy tree — Add sub-album, Rename, Delete."""
         iid = tree.identify_row(event.y)
         if not iid:
             return
-        fullname = fullname_map.get(iid, iid)
-        short    = fullname.rsplit(" / ", 1)[-1]
-        parent_id = int(iid)
+        fullname  = fullname_map.get(iid, iid)
+        short     = fullname.rsplit(" / ", 1)[-1]
+        album_id  = int(iid)
+        item_text = tree.item(iid, "text")
+        # Count is embedded as "Name  (N)" — zero means empty
+        m = re.search(r'\((\d[\d,]*)\)\s*$', item_text)
+        is_empty  = (int(m.group(1).replace(',', '')) == 0) if m else False
 
         menu = tk.Menu(tree, tearoff=0)
         menu.add_command(
             label=f"Add sub-album under \"{short}\"",
             command=lambda: self.root.after(
-                50, lambda: self._add_sub_album_dialog(parent_id, short, tree)))
+                50, lambda: self._add_sub_album_dialog(album_id, short, tree)))
+        menu.add_command(
+            label=f"Rename \"{short}\"",
+            command=lambda: self.root.after(
+                50, lambda: self._rename_album_dialog(album_id, short, tree)))
+        if is_empty:
+            menu.add_separator()
+            menu.add_command(
+                label=f"Delete \"{short}\"",
+                command=lambda: self.root.after(
+                    50, lambda: self._delete_album_dialog(album_id, short, tree)))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _add_sub_album_dialog(self, parent_id: int, parent_name: str,
@@ -1306,8 +1321,8 @@ class PhotosEditor:
 
             def worker():
                 try:
-                    params = DownloadAlbumStructure.load_params()
-                    client = DownloadAlbumStructure.PiwigoClient(
+                    params = AlbumHierarchy.load_params()
+                    client = AlbumHierarchy.PiwigoClient(
                         params["url"], params["username"], params["password"],
                         verify_ssl=params.get("verify_ssl", True),
                         rate_limit_calls_per_second=params.get(
@@ -1346,6 +1361,111 @@ class PhotosEditor:
         rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
         dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
         dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+    def _rename_album_dialog(self, album_id: int, current_name: str,
+                             tree: ttk.Treeview):
+        """Prompt for a new name and rename the album on the server."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Rename Album")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text=f"Rename \"{current_name}\" to:",
+                  padding=(16, 12, 16, 4)).pack()
+        name_var = tk.StringVar(value=current_name)
+        entry = ttk.Entry(dlg, textvariable=name_var, width=40)
+        entry.pack(padx=16, pady=(0, 8))
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        msg_var = tk.StringVar()
+        ttk.Label(dlg, textvariable=msg_var, foreground="red",
+                  padding=(16, 0, 16, 4)).pack()
+        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
+        btn_row.pack()
+
+        def _rename():
+            name = name_var.get().strip()
+            if not name or name == current_name:
+                dlg.destroy()
+                return
+            ok_btn.config(state="disabled")
+            cancel_btn.config(state="disabled")
+            msg_var.set("Renaming…")
+            dlg.update_idletasks()
+
+            def worker():
+                try:
+                    params = AlbumHierarchy.load_params()
+                    client = AlbumHierarchy.PiwigoClient(
+                        params["url"], params["username"], params["password"],
+                        verify_ssl=params.get("verify_ssl", True),
+                        rate_limit_calls_per_second=params.get(
+                            "rate_limit_calls_per_second", 2.0))
+                    client.login(params["username"], params["password"])
+                    client.rename_album(album_id, name)
+                    client.logout()
+                    self.root.after(0, lambda: _done(name))
+                except Exception as e:
+                    self.root.after(0, lambda e=e: _error(str(e)))
+
+            def _done(new_name: str):
+                dlg.destroy()
+                self.set_status(f"Renamed album to \"{new_name}\".")
+                self._refresh_hierarchy_on_startup()
+
+            def _error(msg: str):
+                msg_var.set(f"Error: {msg}")
+                ok_btn.config(state="normal")
+                cancel_btn.config(state="normal")
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        ok_btn     = ttk.Button(btn_row, text="Rename", command=_rename)
+        cancel_btn = ttk.Button(btn_row, text="Cancel", command=dlg.destroy)
+        ok_btn.pack(side="left", padx=(0, 8))
+        cancel_btn.pack(side="left")
+        entry.bind("<Return>", lambda e: _rename())
+        entry.bind("<Escape>", lambda e: dlg.destroy())
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
+
+    def _delete_album_dialog(self, album_id: int, name: str,
+                             tree: ttk.Treeview):
+        """Ask for confirmation then delete the (empty) album from the server."""
+        if not messagebox.askyesno(
+                "Delete Album",
+                f"Delete the empty album \"{name}\"?\n\nThis cannot be undone.",
+                icon="warning", parent=self.root):
+            return
+
+        self.set_status(f"Deleting album \"{name}\"…")
+
+        def worker():
+            try:
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get(
+                        "rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                client.delete_album(album_id)
+                client.logout()
+                self.root.after(0, _done)
+            except Exception as e:
+                self.root.after(0, lambda e=e: self.set_status(f"Delete failed: {e}"))
+
+        def _done():
+            self.set_status(f"Deleted album \"{name}\".")
+            self._refresh_hierarchy_on_startup()
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_target_album_selected(self, album_id: int, fullname: str):
         self.target_album_id   = album_id
@@ -1510,8 +1630,8 @@ class PhotosEditor:
                              count_var: tk.StringVar,
                              on_total, on_progress, on_done, gen: int):
         try:
-            params = DownloadAlbumStructure.load_params()
-            client = DownloadAlbumStructure.PiwigoClient(
+            params = AlbumHierarchy.load_params()
+            client = AlbumHierarchy.PiwigoClient(
                 params["url"], params["username"], params["password"],
                 verify_ssl=params.get("verify_ssl", True),
                 rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -1882,8 +2002,8 @@ class PhotosEditor:
             n_ok      = 0
             undo_items = []   # {image_id, name, original_cats}
             try:
-                params = DownloadAlbumStructure.load_params()
-                client = DownloadAlbumStructure.PiwigoClient(
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=params.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -2041,8 +2161,8 @@ class PhotosEditor:
             errors = []
             n_ok   = 0
             try:
-                params = DownloadAlbumStructure.load_params()
-                client = DownloadAlbumStructure.PiwigoClient(
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=params.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -2106,8 +2226,8 @@ class PhotosEditor:
         def worker():
             errors = []
             try:
-                params = DownloadAlbumStructure.load_params()
-                client = DownloadAlbumStructure.PiwigoClient(
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=params.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -2151,8 +2271,8 @@ class PhotosEditor:
 
         def worker():
             try:
-                params = DownloadAlbumStructure.load_params()
-                client = DownloadAlbumStructure.PiwigoClient(
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=params.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -2222,13 +2342,13 @@ class PhotosEditor:
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
             return
         try:
-            params = DownloadAlbumStructure.load_params()
+            params = AlbumHierarchy.load_params()
             verify = params.get("verify_ssl", True)
 
             # Fetch full image metadata (includes author, tags, etc.)
             rich_dict = dict(img_dict)
             try:
-                client = DownloadAlbumStructure.PiwigoClient(
+                client = AlbumHierarchy.PiwigoClient(
                     params["url"], params["username"], params["password"],
                     verify_ssl=verify,
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
@@ -2320,7 +2440,7 @@ class PhotosEditor:
         def worker():
             temp_path = None
             try:
-                params = DownloadAlbumStructure.load_params()
+                params = AlbumHierarchy.load_params()
 
                 # Save edited PIL image to a temp JPEG
                 set_stage("Saving edited image…")
@@ -2341,7 +2461,7 @@ class PhotosEditor:
                             Image.Resampling.LANCZOS)
                 img.save(temp_path, format='JPEG', quality=92)
 
-                client = DownloadAlbumStructure.PiwigoClient(
+                client = AlbumHierarchy.PiwigoClient(
                     params['url'], params['username'], params['password'],
                     verify_ssl=params.get('verify_ssl', True),
                     rate_limit_calls_per_second=params.get('rate_limit_calls_per_second', 2.0))
@@ -2919,8 +3039,8 @@ class PhotosEditor:
         self._validate_date_field()
 
     def _open_tag_picker(self):
-        """Open the shared tag picker dialog from DownloadAlbumStructure."""
-        DownloadAlbumStructure.show_tag_picker(self.root, self.custom_vars['tags'], self._tag_cache)
+        """Open the shared tag picker dialog."""
+        TagHandler.show_tag_picker(self.root, self.custom_vars['tags'], self._tag_cache)
 
     # -----------------------------------------------------------------------
     # Field validation (identical to PhotosUploader)
