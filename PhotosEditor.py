@@ -65,6 +65,7 @@ if str(_PIWIGO_HELPERS) not in sys.path:
 try:
     import AlbumHierarchy
     import TagHandler
+    import DateUtils
     # Override the params-file path to the exe/script's own directory.
     AlbumHierarchy.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
@@ -536,18 +537,10 @@ class ThumbnailPanel:
 # Main application
 # ---------------------------------------------------------------------------
 class PhotosEditor:
-    _MONTH_MAP: dict = {
-        'jan': 1, 'january': 1,   'feb': 2, 'february': 2,
-        'mar': 3, 'march': 3,     'apr': 4, 'april': 4,
-        'may': 5, 'jun': 6,       'june': 6,
-        'jul': 7, 'july': 7,      'aug': 8, 'august': 8,
-        'sep': 9, 'sept': 9,      'september': 9,
-        'oct': 10, 'october': 10, 'nov': 11, 'november': 11,
-        'dec': 12, 'december': 12,
-    }
-    _2DY_CUTOFF:    int = 35
-    _DATE_MIN_YEAR: int = 1926
-    _DATE_MAX_YEAR: int = 2035
+    _MONTH_MAP      = DateUtils.MONTH_MAP
+    _2DY_CUTOFF     = DateUtils.TWO_DIGIT_CUTOFF
+    _DATE_MIN_YEAR  = DateUtils.DATE_MIN_YEAR
+    _DATE_MAX_YEAR  = DateUtils.DATE_MAX_YEAR
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -3105,62 +3098,12 @@ class PhotosEditor:
     # Date parsing (identical to PhotosUploader)
     # -----------------------------------------------------------------------
     @staticmethod
+    @staticmethod
     def _expand_year(yy: int) -> int:
-        return (2000 if yy <= PhotosEditor._2DY_CUTOFF else 1900) + yy
+        return DateUtils.expand_year(yy)
 
-    def _parse_date(self, text: str):
-        text = re.sub(r'\s+', ' ', text.strip())
-        if not text:
-            return None
-
-        def yr(s: str) -> int:
-            v = int(s)
-            return v if len(s) == 4 else self._expand_year(v)
-
-        def make(year: int, month: int, day: int = 1):
-            try:
-                return datetime(year, month, day)
-            except ValueError:
-                return None
-
-        for fmt in ('%Y:%m:%d %H:%M:%S', '%Y:%m:%d'):
-            try:
-                return datetime.strptime(text, fmt)
-            except ValueError:
-                pass
-
-        m = re.fullmatch(r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{4}|\d{2})', text)
-        if m:
-            a, b, y = int(m.group(1)), int(m.group(2)), yr(m.group(3))
-            return make(y, a, b) or make(y, b, a)
-
-        m = re.fullmatch(r'(\d{1,2})[/\-](\d{4}|\d{2})', text)
-        if m:
-            return make(yr(m.group(2)), int(m.group(1)))
-
-        m = re.fullmatch(r'(\d{4})', text)
-        if m:
-            return make(int(m.group(1)), 1)
-
-        m = re.fullmatch(r'(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}|\d{2})', text)
-        if m:
-            month = self._MONTH_MAP.get(m.group(2).lower())
-            if month:
-                return make(yr(m.group(3)), month, int(m.group(1)))
-
-        m = re.fullmatch(r'([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4}|\d{2})', text)
-        if m:
-            month = self._MONTH_MAP.get(m.group(1).lower())
-            if month:
-                return make(yr(m.group(3)), month, int(m.group(2)))
-
-        m = re.fullmatch(r'([A-Za-z]+)\s+(\d{4}|\d{2})', text)
-        if m:
-            month = self._MONTH_MAP.get(m.group(1).lower())
-            if month:
-                return make(yr(m.group(2)), month)
-
-        return None
+    def _parse_date(self, text: str) -> "datetime | None":
+        return DateUtils.parse_date(text)
 
 
 # ---------------------------------------------------------------------------
