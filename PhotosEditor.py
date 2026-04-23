@@ -14,6 +14,8 @@ import os
 import re
 import sys
 import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import logging
@@ -737,6 +739,11 @@ class PhotosEditor:
                 self._editor_dlg.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
             self._editor_dlg.protocol("WM_DELETE_WINDOW", self._close_editor_dialog)
             self._editor_dlg.bind("<Control-z>", lambda e: self._undo_edit())
+            self._editor_dlg.bind("<Control-y>", lambda e: self._crop_photo())
+            self._editor_dlg.bind("<Control-u>", lambda e: self._upload_current_photo())
+            self._editor_dlg.bind("<Control-s>", lambda e: self._upload_current_photo())
+            self._editor_dlg.bind("<Control-i>", lambda e: self._open_in_irfanview())
+            self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
         else:
             self._editor_dlg.deiconify()
             self._clear_editor()   # wipe previous image before new one loads
@@ -1278,12 +1285,12 @@ class PhotosEditor:
             label=f"Rename \"{short}\"",
             command=lambda: self.root.after(
                 50, lambda: self._rename_album_dialog(album_id, short, tree)))
-        if is_empty:
-            menu.add_separator()
-            menu.add_command(
-                label=f"Delete \"{short}\"",
-                command=lambda: self.root.after(
-                    50, lambda: self._delete_album_dialog(album_id, short, tree)))
+        menu.add_separator()
+        menu.add_command(
+            label=f"Delete \"{short}\"",
+            command=lambda: self.root.after(
+                50, lambda: self._delete_album_dialog(album_id, short, tree)),
+            state="normal" if is_empty else "disabled")
         menu.tk_popup(event.x_root, event.y_root)
 
     def _add_sub_album_dialog(self, parent_id: int, parent_name: str,
@@ -2397,6 +2404,37 @@ class PhotosEditor:
         self.rotate_180_btn.config(state="normal")
         self.revert_btn.config(state="normal")
         self.set_status(f"Loaded: {name}")
+
+    _IRFANVIEW_PATHS = [
+        r"C:\Program Files\IrfanView\i_view64.exe",
+        r"C:\Program Files (x86)\IrfanView\i_view64.exe",
+    ]
+
+    def _open_in_irfanview(self):
+        if self._viewer_image is None:
+            return
+        exe = next((p for p in self._IRFANVIEW_PATHS if os.path.isfile(p)), None)
+        if exe is None:
+            exe = shutil.which("i_view64.exe")
+        img = self._viewer_image
+        suffix = ".jpg" if img.mode in ("RGB", "L") else ".png"
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp.close()
+        try:
+            img.save(tmp.name)
+        except Exception as e:
+            self.set_status(f"Could not save temp image: {e}")
+            return
+        if exe is None:
+            try:
+                os.startfile(tmp.name)
+            except Exception as e:
+                self.set_status(f"Could not open image: {e}")
+            return
+        try:
+            subprocess.Popen([exe, tmp.name, '/fs'])
+        except Exception as e:
+            self.set_status(f"Could not open IrfanView: {e}")
 
     def _upload_current_photo(self):
         """Upload the current (possibly edited) photo back to Piwigo."""
