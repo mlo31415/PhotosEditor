@@ -93,7 +93,7 @@ CUSTOM_FIELDS = [
     ('photo_source',    'Photographer/Source'),
     ('date_of_photo',   'Date of Photo'),
     ('comments',        'Caption'),
-    ('tags',            'Tags (comma-separated)'),
+    ('tags',            'Tags'),
 ]
 
 VIEWER_FETCH_SIZE  = "medium"        # Piwigo derivative used in the editor canvas
@@ -312,6 +312,8 @@ class ThumbnailPanel:
         self.cell_by_id:   dict = {}   # image_id → tk.Frame
         self.selected_ids: set  = set()
         self.shown_album_id: "int | None" = None
+        self.load_gen: int = 0                      # incremented to cancel in-flight loads
+        self._load_dlg: "tk.Toplevel | None" = None # active progress dialog, if any
 
         # Tree state (populated by PhotosEditor)
         self.tree_all_items:       list = []
@@ -610,6 +612,7 @@ class PhotosEditor:
         self.thumb_count_var      = tk.StringVar(value="")
         self.target_thumb_count_var = tk.StringVar(value="")
         self.custom_vars:    dict = {}
+        self._tag_cache:     list = [None]  # in-memory tag cache shared across tag picker opens
 
         # ── photo restoration state ─────────────────────────────────────────
         self._restoration_base:    Image.Image | None = None
@@ -840,6 +843,17 @@ class PhotosEditor:
                               font=("TkDefaultFont", 9))
                 txt.grid(row=row, column=2, sticky="ew", pady=2)
                 self.custom_vars[key] = txt
+            elif key == 'tags':
+                var = tk.StringVar()
+                tag_frame = ttk.Frame(custom_frame)
+                tag_frame.grid(row=row, column=2, sticky="ew", pady=2)
+                tag_frame.columnconfigure(0, weight=1)
+                ttk.Entry(tag_frame, textvariable=var, state='readonly').grid(
+                    row=0, column=0, sticky="ew")
+                ttk.Button(tag_frame, text="…", width=3,
+                           command=self._open_tag_picker).grid(
+                    row=0, column=1, padx=(2, 0))
+                self.custom_vars[key] = var
             else:
                 var = tk.StringVar()
                 if key == 'date_of_photo':
@@ -1406,12 +1420,24 @@ class PhotosEditor:
     def _load_panel_photos(self, panel: "ThumbnailPanel",
                            album_id: int, album_name: str,
                            count_var: tk.StringVar):
+        # Cancel any in-flight load for this panel: increment generation and
+        # close the old progress dialog so the old worker stops adding cells.
+        panel.load_gen += 1
+        gen = panel.load_gen
+        if panel._load_dlg is not None:
+            try:
+                panel._load_dlg.destroy()
+            except Exception:
+                pass
+            panel._load_dlg = None
+
         panel.clear()
         self._drag_batch.clear()
         count_var.set("")
         self.set_status(f"Fetching photos from \"{album_name}\"…")
 
         dlg = tk.Toplevel(self.root)
+        panel._load_dlg = dlg
         dlg.title("Downloading Photos")
         dlg.resizable(False, False)
         dlg.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -1453,11 +1479,15 @@ class PhotosEditor:
             self.root.after(0, _apply)
 
         def _on_done():
-            self.root.after(0, lambda: dlg.destroy() if dlg_alive[0] else None)
+            def _apply():
+                panel._load_dlg = None
+                if dlg_alive[0]:
+                    dlg.destroy()
+            self.root.after(0, _apply)
 
         threading.Thread(
             target=self._worker_fetch_photos,
-            args=(panel, album_id, album_name, count_var, _on_total, _on_progress, _on_done),
+            args=(panel, album_id, album_name, count_var, _on_total, _on_progress, _on_done, gen),
             daemon=True).start()
 
     def _load_album_photos(self):
@@ -1478,7 +1508,7 @@ class PhotosEditor:
     def _worker_fetch_photos(self, panel: "ThumbnailPanel",
                              album_id: int, album_name: str,
                              count_var: tk.StringVar,
-                             on_total, on_progress, on_done):
+                             on_total, on_progress, on_done, gen: int):
         try:
             params = DownloadAlbumStructure.load_params()
             client = DownloadAlbumStructure.PiwigoClient(
@@ -1489,6 +1519,8 @@ class PhotosEditor:
             images = client.get_album_images(album_id)
             client.logout()
 
+            if gen != panel.load_gen:
+                return
             panel.album_images = images
             panel.shown_album_id = album_id
             n = len(images)
@@ -1497,9 +1529,13 @@ class PhotosEditor:
 
             verify = params.get("verify_ssl", True)
             for idx, img_dict in enumerate(images):
-                self._worker_download_thumb(panel, img_dict, verify)
+                if gen != panel.load_gen:
+                    return
+                self._worker_download_thumb(panel, img_dict, verify, gen)
                 on_progress(idx + 1, n)
 
+            if gen != panel.load_gen:
+                return
             on_done()
             self.root.after(0, lambda: self.set_status(
                 f"Loaded {n} photo{'s' if n != 1 else ''} from \"{album_name}\""))
@@ -1509,7 +1545,8 @@ class PhotosEditor:
             self.root.after(0, lambda e=e: messagebox.showerror("Error", str(e)))
             self.root.after(0, lambda e=e: self.set_status(f"Error: {e}"))
 
-    def _worker_download_thumb(self, panel: "ThumbnailPanel", img_dict: dict, verify: bool):
+    def _worker_download_thumb(self, panel: "ThumbnailPanel", img_dict: dict,
+                               verify: bool, gen: int):
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
             return
         image_id = img_dict.get("id")
@@ -1533,8 +1570,11 @@ class PhotosEditor:
             if pil.mode not in ("RGB", "RGBA"):
                 pil = pil.convert("RGB")
             pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
+            if gen != panel.load_gen:
+                return
             panel.thumb_cache[image_id] = pil
-            self.root.after(0, lambda iid=image_id, d=img_dict: panel.add_cell(iid, d))
+            self.root.after(0, lambda iid=image_id, d=img_dict:
+                panel.add_cell(iid, d) if gen == panel.load_gen else None)
         except Exception as e:
             logger.warning(f"Thumbnail {image_id} ({url}): {e}")
 
@@ -2877,6 +2917,10 @@ class PhotosEditor:
                 widget.set('')
         self._validate_caption_field()
         self._validate_date_field()
+
+    def _open_tag_picker(self):
+        """Open the shared tag picker dialog from DownloadAlbumStructure."""
+        DownloadAlbumStructure.show_tag_picker(self.root, self.custom_vars['tags'], self._tag_cache)
 
     # -----------------------------------------------------------------------
     # Field validation (identical to PhotosUploader)
