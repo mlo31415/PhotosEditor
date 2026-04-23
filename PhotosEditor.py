@@ -736,6 +736,9 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-u>", lambda e: self._upload_current_photo())
             self._editor_dlg.bind("<Control-s>", lambda e: self._upload_current_photo())
             self._editor_dlg.bind("<Control-i>", lambda e: self._open_in_irfanview())
+            self._editor_dlg.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
+            self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
+            self._editor_dlg.bind("<Control-n>", lambda e: self._add_needs_id_tag())
             self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
         else:
             self._editor_dlg.deiconify()
@@ -3068,6 +3071,27 @@ class PhotosEditor:
                 widget.set('')
         self._validate_caption_field()
         self._validate_date_field()
+
+    def _add_needs_id_tag(self):
+        """Add 'Needs-ID' to the tags field if not already present."""
+        var = self.custom_vars.get('tags')
+        if var is None:
+            return
+        current = {t.strip() for t in var.get().split(',') if t.strip()}
+        if 'Needs-ID' not in current:
+            current.add('Needs-ID')
+            var.set(', '.join(sorted(current)))
+
+    def _insert_lr_prefix(self, replace: bool = False):
+        """Insert 'L-R: ' into the caption field, optionally clearing it first."""
+        widget = self.custom_vars.get('comments')
+        if widget is None:
+            return
+        if replace:
+            widget.delete('1.0', 'end')
+        widget.insert('1.0', 'L-R: ')
+        widget.mark_set('insert', '1.5')
+        widget.focus_set()
 
     def _open_tag_picker(self):
         """Open the shared tag picker dialog."""
