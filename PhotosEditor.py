@@ -740,6 +740,10 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
             self._editor_dlg.bind("<Control-n>", lambda e: self._add_needs_id_tag())
             self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
+            # Ctrl+H is eaten by the Text widget class binding before it reaches the
+            # Toplevel.  bind_all fires at the Tcl "all" level, after all widget/class
+            # bindings, so it reliably catches the event regardless of which child has focus.
+            self._editor_dlg.bind_all('<Control-h>', lambda e: self._show_shortcuts_help())
         else:
             self._editor_dlg.deiconify()
             self._clear_editor()   # wipe previous image before new one loads
@@ -760,6 +764,7 @@ class PhotosEditor:
         # Persist the dialog's current geometry so it reopens in the same spot.
         self._state["editor_geometry"] = self._editor_dlg.geometry()
         _save_state(self._state)
+        self._editor_dlg.unbind_all('<Control-h>')
         self._editor_dlg.grab_release()
         self._editor_dlg.withdraw()
         # Refresh the thumbnail in whichever grid it came from.
@@ -3081,6 +3086,44 @@ class PhotosEditor:
         if 'Needs-ID' not in current:
             current.add('Needs-ID')
             var.set(', '.join(sorted(current)))
+
+    _SHORTCUTS = [
+        ("Ctrl+U / Ctrl+S", "Upload current photo"),
+        ("Ctrl+Y",          "Crop photo"),
+        ("Ctrl+Z",          "Undo last edit"),
+        ("Ctrl+I",          "Open in IrfanView"),
+        ("Ctrl+L",          'Prepend "L-R: " to caption'),
+        ("Shift+Ctrl+L",    'Replace caption with "L-R: "'),
+        ("Ctrl+N",          'Add "Needs-ID" tag'),
+        ("Escape",          "Close editor"),
+        ("Ctrl+H",          "Show this help"),
+    ]
+
+    def _show_shortcuts_help(self):
+        parent = self._editor_dlg if (self._editor_dlg and
+                                      self._editor_dlg.winfo_exists()) else self.root
+        dlg = tk.Toplevel(parent)
+        dlg.title("Keyboard Shortcuts")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill='both', expand=True)
+        for row, (keys, desc) in enumerate(self._SHORTCUTS):
+            ttk.Label(frame, text=keys, font=("TkFixedFont", 10, "bold"),
+                      anchor='e').grid(row=row, column=0, sticky='e', padx=(0, 12), pady=2)
+            ttk.Label(frame, text=desc, anchor='w').grid(
+                row=row, column=1, sticky='w', pady=2)
+        ttk.Button(frame, text="Close", command=dlg.destroy).grid(
+            row=len(self._SHORTCUTS), column=0, columnspan=2, pady=(12, 0))
+        dlg.bind('<Escape>', lambda e: dlg.destroy())
+        dlg.bind('<Return>', lambda e: dlg.destroy())
+        # Centre over parent
+        parent.update_idletasks()
+        dlg.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
 
     def _insert_lr_prefix(self, replace: bool = False):
         """Insert 'L-R: ' into the caption field, optionally clearing it first."""
