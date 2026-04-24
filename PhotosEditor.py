@@ -740,10 +740,7 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
             self._editor_dlg.bind("<Control-n>", lambda e: self._add_needs_id_tag())
             self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
-            # Ctrl+H is eaten by the Text widget class binding before it reaches the
-            # Toplevel.  bind_all fires at the Tcl "all" level, after all widget/class
-            # bindings, so it reliably catches the event regardless of which child has focus.
-            self._editor_dlg.bind_all('<Control-h>', lambda e: self._show_shortcuts_help())
+            self._editor_dlg.bind("<Control-h>", lambda e: self._show_shortcuts_help())
         else:
             self._editor_dlg.deiconify()
             self._clear_editor()   # wipe previous image before new one loads
@@ -764,7 +761,6 @@ class PhotosEditor:
         # Persist the dialog's current geometry so it reopens in the same spot.
         self._state["editor_geometry"] = self._editor_dlg.geometry()
         _save_state(self._state)
-        self._editor_dlg.unbind_all('<Control-h>')
         self._editor_dlg.grab_release()
         self._editor_dlg.withdraw()
         # Refresh the thumbnail in whichever grid it came from.
