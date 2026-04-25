@@ -39,14 +39,6 @@ try:
 except Exception:
     REQUESTS_AVAILABLE = False
 
-try:
-    import cv2
-    import numpy as np
-    CV2_AVAILABLE = True
-except Exception:
-    CV2_AVAILABLE = False
-
-
 # ---------------------------------------------------------------------------
 # Locate and import the shared AlbumHierarchy module
 # ---------------------------------------------------------------------------
@@ -66,6 +58,7 @@ try:
     import AlbumHierarchy
     import TagHandler
     import DateUtils
+    import PhotoRestoration
     # Override the params-file path to the exe/script's own directory.
     AlbumHierarchy.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
@@ -102,43 +95,6 @@ CUSTOM_FIELDS = [
 
 VIEWER_FETCH_SIZE  = "medium"        # Piwigo derivative used in the editor canvas
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _opencv_restore(pil_img: "Image.Image",
-                    exposure: float, contrast: float,
-                    red_cast: float, sharpen: float) -> "Image.Image":
-    """Apply fading/redness/blur corrections using OpenCV.
-    All parameters are on a −100…+100 (or 0…100) scale.
-    Returns a new PIL Image."""
-    img = np.array(pil_img.convert("RGB"), dtype=np.float32)
-
-    # 1. Red-cast removal ────────────────────────────────────────────────────
-    if red_cast > 0:
-        t = red_cast / 100.0
-        img[:, :, 0] = np.clip(img[:, :, 0] * (1.0 - t * 0.50), 0, 255)  # R ↓
-        img[:, :, 1] = np.clip(img[:, :, 1] * (1.0 + t * 0.05), 0, 255)  # G ↑ slight
-        img[:, :, 2] = np.clip(img[:, :, 2] * (1.0 + t * 0.30), 0, 255)  # B ↑
-
-    # 2. Exposure + Contrast ─────────────────────────────────────────────────
-    #    alpha: 0.5 … 2.5   beta: −100 … +100
-    alpha = 1.0 + contrast / 100.0 * 1.5
-    beta  = exposure
-    if alpha != 1.0 or beta != 0.0:
-        img = np.clip(img * alpha + beta, 0, 255)
-
-    # 3. Sharpening (unsharp mask) ────────────────────────────────────────────
-    if sharpen > 0 and CV2_AVAILABLE:
-        t      = sharpen / 100.0
-        sigma  = 1.0 + t * 2.0    # blur radius 1 → 3
-        amount = t * 1.5           # blend weight 0 → 1.5
-        u8     = img.astype(np.uint8)
-        blurred = cv2.GaussianBlur(u8, (0, 0), sigma)
-        img = cv2.addWeighted(u8, 1.0 + amount, blurred, -amount, 0).astype(np.float32)
-
-    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
-
 
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
@@ -576,9 +532,10 @@ class PhotosEditor:
         self._press_pos:            tuple | None = None
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
-        self._zoomed:               bool        = False
-        self._unzoomed_sash:        int | None  = None   # main pane sash saved before zoom
-        self._unzoomed_source_sash: int | None  = None   # source hpane sash (tree width) before zoom
+        self._zoomed:               bool         = False
+        self._unzoomed_sash_frac:   float | None = None  # main pane sash as fraction [0,1] before zoom
+        self._unzoomed_source_sash: int   | None = None  # source hpane tree-column width before zoom
+        self._unzoomed_target_sash: int   | None = None  # target hpane tree-column width before zoom
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -952,7 +909,7 @@ class PhotosEditor:
                       variable=dvar, command=_cmd).pack(
                           side="left", fill="x", expand=True)
 
-        if not CV2_AVAILABLE:
+        if not PhotoRestoration.CV2_AVAILABLE:
             ttk.Label(btns_col, text="(requires\nopencv-python)",
                       foreground="red", justify="center").pack(pady=(0, 4))
         ttk.Button(btns_col, text="Revert\nRestoration",
@@ -985,9 +942,10 @@ class PhotosEditor:
                 self.root.geometry(geo)
             except Exception:
                 pass
-        sash = self._state.get("sash", None)
-        if sash is not None:
-            self.root.after(200, lambda: self._set_main_sash(sash))
+        sash_frac = self._state.get("sash_frac", None)
+        if sash_frac is not None:
+            self._unzoomed_sash_frac = float(sash_frac)
+            self.root.after(200, lambda f=float(sash_frac): self._apply_main_sash_frac(f))
         # Stash saved album IDs so tree-population methods can restore them.
         # Do NOT load photos here — _populate_*_hierarchy_tree() will trigger
         # the load after confirming the album still exists in the hierarchy.
@@ -1002,9 +960,41 @@ class PhotosEditor:
             self._saved_target_album_id   = target_id
             self._saved_target_album_name = target_name
 
-    def _set_main_sash(self, pos: int):
+    def _min_sash_px(self) -> int:
+        """Minimum pixel width for any panel: max(10% of app width, 150 px)."""
         try:
-            self._main_pane.sashpos(0, pos)
+            return max(int(self.root.winfo_width() * 0.10), 150)
+        except Exception:
+            return 150
+
+    def _apply_main_sash_frac(self, frac: float):
+        """Set the main horizontal sash from a fraction; retries until layout is ready."""
+        total = self._main_pane.winfo_width()
+        if total < 50:
+            self.root.after(30, lambda: self._apply_main_sash_frac(frac))
+            return
+        min_px   = self._min_sash_px()
+        min_frac = min_px / total if total > 0 else 0.10
+        frac     = max(min_frac, min(1.0 - min_frac, frac))
+        try:
+            self._main_pane.sashpos(0, round(total * frac))
+        except Exception:
+            pass
+
+    def _apply_sub_sash(self, hpane: "ttk.PanedWindow", raw_pos: int, attempt: int = 0):
+        """Apply a tree-column sash within a sub-panel, enforcing min_px on both sides.
+        Retries if the panel hasn't settled to a usable width yet."""
+        try:
+            min_px  = self._min_sash_px()
+            panel_w = hpane.winfo_width()
+            if panel_w < 2 * min_px and attempt < 8:
+                self.root.after(25, lambda: self._apply_sub_sash(hpane, raw_pos, attempt + 1))
+                return
+            if panel_w >= 2 * min_px:
+                pos = max(min_px, min(panel_w - min_px, raw_pos))
+            else:
+                pos = max(min_px, raw_pos)
+            hpane.sashpos(0, pos)
         except Exception:
             pass
 
@@ -1031,10 +1021,18 @@ class PhotosEditor:
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             state["editor_geometry"] = self._editor_dlg.geometry()
         state["geometry"] = self.root.geometry()
-        # Always save the unzoomed sash position
+        # Always save the unzoomed sash as a fraction so it survives window resizes
         try:
-            state["sash"] = (self._unzoomed_sash if self._zoomed
-                             else self._main_pane.sashpos(0))
+            if self._zoomed:
+                frac = self._unzoomed_sash_frac if self._unzoomed_sash_frac is not None else 0.5
+            else:
+                total = self._main_pane.winfo_width()
+                sash  = self._main_pane.sashpos(0)
+                frac  = sash / total if total > 10 else 0.5
+            min_px   = self._min_sash_px()
+            total    = self._main_pane.winfo_width()
+            min_frac = min_px / total if total > 0 else 0.10
+            state["sash_frac"] = max(min_frac, min(1.0 - min_frac, frac))
         except Exception:
             pass
         if self.current_album_id is not None:
@@ -1056,37 +1054,60 @@ class PhotosEditor:
 
     def _toggle_zoom(self):
         if self._zoomed:
-            # Re-add right panel, force layout, restore main sash and tree width
+            # ── Unzoom: re-add target panel, then restore all four sash positions ──
             self._main_pane.add(self._target_panel.frame, weight=2)
-            self._main_pane.update()
-            if self._unzoomed_sash is not None:
-                self._set_main_sash(self._unzoomed_sash)
-            # Restore the source tree to its pre-zoom width
-            if self._unzoomed_source_sash is not None:
-                self._source_panel.hpane.update()
-                try:
-                    self._source_panel.hpane.sashpos(0, self._unzoomed_source_sash)
-                except Exception:
-                    pass
             self._zoom_btn.config(text="Zoom")
             self._zoomed = False
+            frac     = self._unzoomed_sash_frac   if self._unzoomed_sash_frac   is not None else 0.5
+            src_sash = self._unzoomed_source_sash
+            tgt_sash = self._unzoomed_target_sash
+
+            def _restore_main(frac=frac, src=src_sash, tgt=tgt_sash):
+                total = self._main_pane.winfo_width()
+                if total < 50:
+                    self.root.after(20, lambda: _restore_main(frac, src, tgt))
+                    return
+                min_px   = self._min_sash_px()
+                min_frac = min_px / total
+                clamped  = max(min_frac, min(1.0 - min_frac, frac))
+                try:
+                    self._main_pane.sashpos(0, round(total * clamped))
+                    # Force geometry to propagate so sub-panel winfo_width() is current
+                    self._main_pane.update_idletasks()
+                except Exception:
+                    pass
+                # Apply sub-sashes now that panel widths are settled
+                if src is not None:
+                    self._apply_sub_sash(self._source_panel.hpane, src)
+                if tgt is not None:
+                    self._apply_sub_sash(self._target_panel.hpane, tgt)
+
+            self.root.after(50, _restore_main)
         else:
-            # Save main sash and source tree width, then hide right panel
+            # ── Zoom: snapshot all four raw sash values, then hide target panel ──
             try:
-                self._unzoomed_sash = self._main_pane.sashpos(0)
+                total = self._main_pane.winfo_width()
+                sash  = self._main_pane.sashpos(0)
+                self._unzoomed_sash_frac = sash / total if total > 10 else 0.5
             except Exception:
-                self._unzoomed_sash = None
+                self._unzoomed_sash_frac = 0.5
             try:
                 self._unzoomed_source_sash = self._source_panel.hpane.sashpos(0)
             except Exception:
                 self._unzoomed_source_sash = None
-            self._main_pane.forget(self._target_panel.frame)
-            # Keep source tree the same width; thumbnails absorb all extra space
-            self._source_panel.hpane.update()
             try:
-                self._source_panel.hpane.sashpos(0, self._unzoomed_source_sash)
+                self._unzoomed_target_sash = self._target_panel.hpane.sashpos(0)
             except Exception:
-                pass
+                self._unzoomed_target_sash = None
+
+            self._main_pane.forget(self._target_panel.frame)
+
+            # Keep source tree at same pixel width (fills proportionally after expand)
+            src_sash = self._unzoomed_source_sash
+            if src_sash is not None:
+                self.root.after(50, lambda s=src_sash:
+                    self._apply_sub_sash(self._source_panel.hpane, s))
+
             self._zoom_btn.config(text="Unzoom")
             self._zoomed = True
 
@@ -2722,8 +2743,8 @@ class PhotosEditor:
     def _apply_restoration_bg(self):
         """Kick off restoration in a background thread."""
         self._restore_after_id = None
-        if not CV2_AVAILABLE or self._restoration_base is None:
-            if not CV2_AVAILABLE:
+        if not PhotoRestoration.CV2_AVAILABLE or self._restoration_base is None:
+            if not PhotoRestoration.CV2_AVAILABLE:
                 self.set_status("opencv-python not installed — pip install opencv-python")
             return
         self._restore_generation += 1
@@ -2735,7 +2756,7 @@ class PhotosEditor:
         base     = self._restoration_base.copy()
 
         def worker():
-            result = _opencv_restore(base, exposure, contrast, red_cast, sharpen)
+            result = PhotoRestoration.opencv_restore(base, exposure, contrast, red_cast, sharpen)
             self.root.after(0, lambda: self._apply_restoration_result(result, gen))
 
         threading.Thread(target=worker, daemon=True).start()
