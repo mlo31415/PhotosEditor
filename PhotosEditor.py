@@ -56,6 +56,7 @@ if str(_PIWIGO_HELPERS) not in sys.path:
 
 try:
     import AlbumHierarchy
+    from AlbumTreeWidget import AlbumTreeWidget
     import TagHandler
     import DateUtils
     import PhotoRestoration
@@ -242,7 +243,8 @@ class ThumbnailPanel:
                  count_var: tk.StringVar,
                  on_tree_select,        # (album_id, fullname) -> None
                  on_tree_populate,      # () -> None  (called after widget mapped)
-                 on_tree_rmb,           # (event, tree, fullname_map) -> None
+                 on_tree_mutation,      # (action, album_id, fullname) -> None
+                 set_status,            # (msg) -> None
                  on_cell_press,         # (event, img_dict, cell, side) -> None
                  on_cell_motion,        # (event, img_dict, cell, side) -> None
                  on_cell_release,       # (event, img_dict, cell, side) -> None
@@ -253,9 +255,7 @@ class ThumbnailPanel:
         self.root        = root
         self.side        = side
         self.thumb_size  = thumb_size
-        self._on_tree_select   = on_tree_select
         self._on_tree_populate = on_tree_populate
-        self._on_tree_rmb      = on_tree_rmb
         self._on_cell_press    = on_cell_press
         self._on_cell_motion   = on_cell_motion
         self._on_cell_release  = on_cell_release
@@ -275,18 +275,23 @@ class ThumbnailPanel:
         self.load_gen: int = 0                      # incremented to cancel in-flight loads
         self._load_dlg: "tk.Toplevel | None" = None # active progress dialog, if any
 
-        # Tree state (populated by PhotosEditor)
-        self.tree_all_items:       list = []
-        self.tree_fullname_by_iid: dict = {}
-        self.tree_hierarchy_data:  list = []   # raw hierarchy for filter rebuild
-        self._tree_filtered:       bool = False
-
         self.frame = ttk.Frame(parent)
-        self._build(album_var, count_var)
+        self._build(album_var, count_var, on_tree_select, on_tree_mutation, set_status)
+
+    # ── Properties delegating to the embedded AlbumTreeWidget ────────────────
+
+    @property
+    def tree(self):
+        return self.atw.tree
+
+    @property
+    def tree_fullname_by_iid(self):
+        return self.atw.tree_fullname_by_iid
 
     # ── UI construction ──────────────────────────────────────────────────────
 
-    def _build(self, album_var: tk.StringVar, count_var: tk.StringVar):
+    def _build(self, album_var: tk.StringVar, count_var: tk.StringVar,
+               on_tree_select, on_tree_mutation, set_status):
         hpane = ttk.PanedWindow(self.frame, orient="horizontal")
         hpane.pack(fill="both", expand=True)
         self.hpane = hpane
@@ -295,34 +300,23 @@ class ThumbnailPanel:
         tree_outer = ttk.LabelFrame(hpane, text="", padding=4)
         hpane.add(tree_outer, weight=2)
 
-        filter_frame = ttk.Frame(tree_outer)
-        filter_frame.pack(fill="x", pady=(0, 4))
-        ttk.Label(filter_frame, text="Filter:").pack(side="left", padx=(0, 4))
-        self._filter_var = tk.StringVar()
-        ttk.Entry(filter_frame, textvariable=self._filter_var).pack(
-            side="left", fill="x", expand=True)
+        def _cancel_current_load():
+            self.load_gen += 1
+            if self._load_dlg is not None:
+                try: self._load_dlg.destroy()
+                except Exception: pass
+                self._load_dlg = None
 
-        tree_frame = ttk.Frame(tree_outer)
-        tree_frame.pack(fill="both", expand=True)
-        yscroll = ttk.Scrollbar(tree_frame, orient="vertical")
-        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal")
-        self.tree = ttk.Treeview(
-            tree_frame, selectmode="browse", show="tree",
-            yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        yscroll.config(command=self.tree.yview)
-        xscroll.config(command=self.tree.xview)
-        yscroll.pack(side="right", fill="y")
-        xscroll.pack(side="bottom", fill="x")
-        self.tree.pack(side="left", fill="both", expand=True)
-        self.tree.column("#0", minwidth=200)
-
-        self._filter_var.trace_add("write", self._on_filter)
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select_event)
-        self.tree.bind("<Double-1>",         self._on_tree_select_event)
-        self.tree.bind("<Button-3>",
-            lambda e: self._on_tree_rmb(e, self.tree, self.tree_fullname_by_iid))
-        self.tree.bind("<MouseWheel>",
-            lambda e: self.tree.yview_scroll(-1 * (e.delta // 120), "units"))
+        self.atw = AlbumTreeWidget(
+            parent                = tree_outer,
+            root                  = self.root,
+            on_select             = on_tree_select,
+            on_mutation           = on_tree_mutation,
+            set_status            = set_status,
+            select_delay_ms       = 1000,
+            on_selection_changing = _cancel_current_load,
+        )
+        self.atw.frame.pack(fill="both", expand=True)
 
         # ── Thumbnail grid ───────────────────────────────────────────────────
         thumb_outer = ttk.LabelFrame(hpane, text="", padding=4)
@@ -359,73 +353,6 @@ class ThumbnailPanel:
 
         self.frame.bind("<Map>",
             lambda e: self.root.after(50, self._on_tree_populate), add="+")
-
-    # ── Tree helpers ─────────────────────────────────────────────────────────
-
-    def _on_tree_select_event(self, _event=None):
-        sel = self.tree.selection()
-        if not sel:
-            return
-        iid      = sel[0]
-        album_id = int(iid)
-        fullname = self.tree_fullname_by_iid.get(iid, "")
-        self._on_tree_select(album_id, fullname)
-
-    def _rebuild_full_tree(self, select_iid: "str | None" = None):
-        """Restore the full hierarchy from stored data, optionally re-selecting an item."""
-        tree = self.tree
-        for item in tree.get_children():
-            tree.delete(item)
-        self.tree_all_items = []
-        self.tree_fullname_by_iid = {}
-        self._tree_filtered = False
-
-        def _ins(parent_iid, nodes, top_level=False):
-            for node in nodes:
-                iid   = str(node["id"])
-                count = node.get("total_nb_images", 0)
-                text  = f"{node['name']}  ({count:,})"
-                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
-                fullname = node.get("fullname", node["name"])
-                self.tree_all_items.append((iid, node["name"].lower(), fullname))
-                self.tree_fullname_by_iid[iid] = fullname
-                if node.get("children"):
-                    _ins(iid, node["children"])
-
-        _ins("", self.tree_hierarchy_data, top_level=True)
-
-        if select_iid and tree.exists(select_iid):
-            tree.selection_set(select_iid)
-            tree.see(select_iid)
-
-    def _on_filter(self, *_):
-        q = self._filter_var.get().strip().lower()
-        if not q:
-            sel = self.tree.selection()
-            cur_iid = sel[0] if sel else None
-            self._rebuild_full_tree(select_iid=cur_iid)
-            return
-
-        # Build a flat list of all items whose fullname contains the query
-        matches = [(iid, fullname)
-                   for iid, _name_lower, fullname in self.tree_all_items
-                   if q in fullname.lower()]
-
-        tree = self.tree
-        for item in tree.get_children():
-            tree.delete(item)
-        # Don't reset tree_all_items / tree_fullname_by_iid — still needed for rebuild
-        self._tree_filtered = True
-
-        if not matches:
-            return
-
-        for iid, fullname in matches:
-            tree.insert("", "end", iid=iid, text=fullname, open=False)
-
-        first_iid = matches[0][0]
-        tree.selection_set(first_iid)
-        tree.see(first_iid)
 
     # ── Grid helpers ─────────────────────────────────────────────────────────
 
@@ -660,40 +587,42 @@ class PhotosEditor:
         self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
 
         self._source_panel = ThumbnailPanel(
-            parent          = self._main_pane,
-            root            = self.root,
-            side            = 'left',
-            thumb_size      = self._thumb_size,
-            album_var       = self.album_var,
-            count_var       = self.thumb_count_var,
-            on_tree_select  = self._on_source_album_selected_from_tree,
-            on_tree_populate= self._populate_source_hierarchy_tree,
-            on_tree_rmb     = self._on_tree_rmb,
-            on_cell_press   = self._on_cell_press,
-            on_cell_motion  = self._on_cell_motion,
-            on_cell_release = self._on_cell_release,
-            on_cell_double  = self._on_cell_double,
-            on_grid_drop    = self._on_grid_drop,
-            on_context_menu = self._on_source_context_menu,
+            parent           = self._main_pane,
+            root             = self.root,
+            side             = 'left',
+            thumb_size       = self._thumb_size,
+            album_var        = self.album_var,
+            count_var        = self.thumb_count_var,
+            on_tree_select   = self._on_source_album_selected_from_tree,
+            on_tree_populate = self._populate_source_hierarchy_tree,
+            on_tree_mutation = lambda action, aid, fn: self._refresh_hierarchy_on_startup(),
+            set_status       = self.set_status,
+            on_cell_press    = self._on_cell_press,
+            on_cell_motion   = self._on_cell_motion,
+            on_cell_release  = self._on_cell_release,
+            on_cell_double   = self._on_cell_double,
+            on_grid_drop     = self._on_grid_drop,
+            on_context_menu  = self._on_source_context_menu,
         )
         self._main_pane.add(self._source_panel.frame, weight=2)
 
         self._target_panel = ThumbnailPanel(
-            parent          = self._main_pane,
-            root            = self.root,
-            side            = 'right',
-            thumb_size      = self._thumb_size,
-            album_var       = self.target_album_var,
-            count_var       = self.target_thumb_count_var,
-            on_tree_select  = self._on_target_album_selected_from_tree,
-            on_tree_populate= self._populate_hierarchy_tree,
-            on_tree_rmb     = self._on_tree_rmb,
-            on_cell_press   = self._on_cell_press,
-            on_cell_motion  = self._on_cell_motion,
-            on_cell_release = self._on_cell_release,
-            on_cell_double  = self._on_cell_double,
-            on_grid_drop    = self._on_grid_drop,
-            on_context_menu = self._on_target_context_menu,
+            parent           = self._main_pane,
+            root             = self.root,
+            side             = 'right',
+            thumb_size       = self._thumb_size,
+            album_var        = self.target_album_var,
+            count_var        = self.target_thumb_count_var,
+            on_tree_select   = self._on_target_album_selected_from_tree,
+            on_tree_populate = self._populate_hierarchy_tree,
+            on_tree_mutation = lambda action, aid, fn: self._refresh_hierarchy_on_startup(),
+            set_status       = self.set_status,
+            on_cell_press    = self._on_cell_press,
+            on_cell_motion   = self._on_cell_motion,
+            on_cell_release  = self._on_cell_release,
+            on_cell_double   = self._on_cell_double,
+            on_grid_drop     = self._on_grid_drop,
+            on_context_menu  = self._on_target_context_menu,
         )
         self._main_pane.add(self._target_panel.frame, weight=2)
 
@@ -1243,13 +1172,7 @@ class PhotosEditor:
                                        album_id_attr: str, album_name_attr: str,
                                        album_var: tk.StringVar,
                                        load_fn):
-        """Load AlbumHierarchy.json into `panel`'s tree.
-
-        `saved_id_attr` / `saved_name_attr` name the PhotosEditor instance
-        attributes holding the saved-session album ID and name to restore on
-        first population.  `album_id_attr` / `album_name_attr` name the
-        attributes holding the currently selected album for that panel.
-        """
+        """Load AlbumHierarchy.json into `panel`'s AlbumTreeWidget."""
         try:
             hier_file = AlbumHierarchy._album_hierarchy_file()
             if not hier_file.exists():
@@ -1260,51 +1183,26 @@ class PhotosEditor:
             logger.warning(f"Could not load hierarchy for {panel.side} tree: {e}")
             return
 
-        panel.tree_hierarchy_data = hierarchy
-
-        tree = panel.tree
-        for item in tree.get_children():
-            tree.delete(item)
-        panel.tree_all_items = []
-        panel.tree_fullname_by_iid = {}
-        panel._tree_filtered = False
-
-        def _populate(parent_iid, nodes, top_level=False):
-            for node in nodes:
-                iid   = str(node["id"])
-                count = node.get("total_nb_images", 0)
-                text  = f"{node['name']}  ({count:,})"
-                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
-                fullname = node.get("fullname", node["name"])
-                panel.tree_all_items.append((iid, node["name"].lower(), fullname))
-                panel.tree_fullname_by_iid[iid] = fullname
-                if node.get("children"):
-                    _populate(iid, node["children"])
-
-        _populate("", hierarchy, top_level=True)
-
-        # On first population, restore the saved album from the previous session.
         saved_id = getattr(self, saved_id_attr)
         if saved_id is not None:
+            # First population: restore previous session album.
+            # Set album_id first so the selection event guard in on_tree_select
+            # sees album_id == current and does not trigger a premature photo load.
+            setattr(self, saved_id_attr, None)
+            setattr(self, album_id_attr, int(saved_id))
+            panel.atw.populate(hierarchy, select_id=int(saved_id))
             iid = str(saved_id)
-            setattr(self, saved_id_attr, None)   # consume so it isn't re-applied on refresh
-            if tree.exists(iid):
-                setattr(self, album_id_attr,   int(iid))
-                setattr(self, album_name_attr, getattr(self, saved_name_attr))
-                album_var.set(getattr(self, saved_name_attr) or "(none)")
-                tree.selection_set(iid)
-                tree.see(iid)
+            if panel.tree.exists(iid):
+                fullname = panel.tree_fullname_by_iid.get(
+                    iid, getattr(self, saved_name_attr) or "")
+                setattr(self, album_name_attr, fullname)
+                album_var.set(fullname or "(none)")
                 self.root.after(0, load_fn)
-            # else: album was deleted — stay at default
             return
 
-        # Re-select current album on subsequent refreshes.
+        # Subsequent refreshes: re-select whatever is currently active.
         current_id = getattr(self, album_id_attr)
-        if current_id is not None:
-            iid = str(current_id)
-            if tree.exists(iid):
-                tree.selection_set(iid)
-                tree.see(iid)
+        panel.atw.populate(hierarchy, select_id=current_id)
 
     def _populate_source_hierarchy_tree(self):
         """Load AlbumHierarchy.json into the source (left) embedded tree."""
@@ -1329,217 +1227,6 @@ class PhotosEditor:
             album_var       = self.target_album_var,
             load_fn         = self._load_target_album_photos,
         )
-
-    def _on_tree_rmb(self, event, tree: ttk.Treeview, fullname_map: dict):
-        """Right-click on either hierarchy tree — Add sub-album, Rename, Delete."""
-        iid = tree.identify_row(event.y)
-        if not iid:
-            return
-        fullname  = fullname_map.get(iid, iid)
-        short     = fullname.rsplit(" / ", 1)[-1]
-        album_id  = int(iid)
-        item_text = tree.item(iid, "text")
-        # Count is embedded as "Name  (N)" — zero means empty
-        m = re.search(r'\((\d[\d,]*)\)\s*$', item_text)
-        is_empty  = (int(m.group(1).replace(',', '')) == 0) if m else False
-
-        menu = tk.Menu(tree, tearoff=0)
-        menu.add_command(
-            label=f"Add sub-album under \"{short}\"",
-            command=lambda: self.root.after(
-                50, lambda: self._add_sub_album_dialog(album_id, short, tree)))
-        menu.add_command(
-            label=f"Rename \"{short}\"",
-            command=lambda: self.root.after(
-                50, lambda: self._rename_album_dialog(album_id, short, tree)))
-        menu.add_separator()
-        menu.add_command(
-            label=f"Delete \"{short}\"",
-            command=lambda: self.root.after(
-                50, lambda: self._delete_album_dialog(album_id, short, tree)),
-            state="normal" if is_empty else "disabled")
-        menu.tk_popup(event.x_root, event.y_root)
-
-    def _add_sub_album_dialog(self, parent_id: int, parent_name: str,
-                              tree: ttk.Treeview):
-        """Show a simple name-entry dialog, then create the sub-album."""
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Add Sub-Album")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-
-        ttk.Label(dlg, text=f"New sub-album under \"{parent_name}\":",
-                  padding=(16, 12, 16, 4)).pack()
-        name_var = tk.StringVar()
-        entry = ttk.Entry(dlg, textvariable=name_var, width=40)
-        entry.pack(padx=16, pady=(0, 8))
-        entry.focus_set()
-
-        msg_var = tk.StringVar()
-        msg_lbl = ttk.Label(dlg, textvariable=msg_var, foreground="red",
-                            padding=(16, 0, 16, 4))
-        msg_lbl.pack()
-
-        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
-        btn_row.pack()
-
-        def _create():
-            name = name_var.get().strip()
-            if not name:
-                msg_var.set("Please enter a name.")
-                return
-            ok_btn.config(state="disabled")
-            cancel_btn.config(state="disabled")
-            msg_var.set("Creating…")
-            dlg.update_idletasks()
-
-            def worker():
-                try:
-                    params = AlbumHierarchy.load_params()
-                    client = AlbumHierarchy.PiwigoClient(
-                        params["url"], params["username"], params["password"],
-                        verify_ssl=params.get("verify_ssl", True),
-                        rate_limit_calls_per_second=params.get(
-                            "rate_limit_calls_per_second", 2.0))
-                    client.login(params["username"], params["password"])
-                    new_id = client.create_album(name, parent_id=parent_id)
-                    client.logout()
-                    self.root.after(0, lambda: _done(new_id, name))
-                except Exception as e:
-                    self.root.after(0, lambda e=e: _error(str(e)))
-
-            def _done(new_id: int, album_name: str):
-                dlg.destroy()
-                self.set_status(f"Created sub-album \"{album_name}\" (id={new_id}).")
-                # Refresh both trees so the new album appears immediately
-                self._refresh_hierarchy_on_startup()
-
-            def _error(msg: str):
-                msg_var.set(f"Error: {msg}")
-                ok_btn.config(state="normal")
-                cancel_btn.config(state="normal")
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        ok_btn     = ttk.Button(btn_row, text="Create", command=_create)
-        cancel_btn = ttk.Button(btn_row, text="Cancel", command=dlg.destroy)
-        ok_btn.pack(side="left", padx=(0, 8))
-        cancel_btn.pack(side="left")
-
-        entry.bind("<Return>", lambda e: _create())
-        entry.bind("<Escape>", lambda e: dlg.destroy())
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-    def _rename_album_dialog(self, album_id: int, current_name: str,
-                             tree: ttk.Treeview):
-        """Prompt for a new name and rename the album on the server."""
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Rename Album")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-
-        ttk.Label(dlg, text=f"Rename \"{current_name}\" to:",
-                  padding=(16, 12, 16, 4)).pack()
-        name_var = tk.StringVar(value=current_name)
-        entry = ttk.Entry(dlg, textvariable=name_var, width=40)
-        entry.pack(padx=16, pady=(0, 8))
-        entry.focus_set()
-        entry.select_range(0, "end")
-
-        msg_var = tk.StringVar()
-        ttk.Label(dlg, textvariable=msg_var, foreground="red",
-                  padding=(16, 0, 16, 4)).pack()
-        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
-        btn_row.pack()
-
-        def _rename():
-            name = name_var.get().strip()
-            if not name or name == current_name:
-                dlg.destroy()
-                return
-            ok_btn.config(state="disabled")
-            cancel_btn.config(state="disabled")
-            msg_var.set("Renaming…")
-            dlg.update_idletasks()
-
-            def worker():
-                try:
-                    params = AlbumHierarchy.load_params()
-                    client = AlbumHierarchy.PiwigoClient(
-                        params["url"], params["username"], params["password"],
-                        verify_ssl=params.get("verify_ssl", True),
-                        rate_limit_calls_per_second=params.get(
-                            "rate_limit_calls_per_second", 2.0))
-                    client.login(params["username"], params["password"])
-                    client.rename_album(album_id, name)
-                    client.logout()
-                    self.root.after(0, lambda: _done(name))
-                except Exception as e:
-                    self.root.after(0, lambda e=e: _error(str(e)))
-
-            def _done(new_name: str):
-                dlg.destroy()
-                self.set_status(f"Renamed album to \"{new_name}\".")
-                self._refresh_hierarchy_on_startup()
-
-            def _error(msg: str):
-                msg_var.set(f"Error: {msg}")
-                ok_btn.config(state="normal")
-                cancel_btn.config(state="normal")
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        ok_btn     = ttk.Button(btn_row, text="Rename", command=_rename)
-        cancel_btn = ttk.Button(btn_row, text="Cancel", command=dlg.destroy)
-        ok_btn.pack(side="left", padx=(0, 8))
-        cancel_btn.pack(side="left")
-        entry.bind("<Return>", lambda e: _rename())
-        entry.bind("<Escape>", lambda e: dlg.destroy())
-
-        self.root.update_idletasks()
-        dlg.update_idletasks()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
-        dlg.geometry(f"{dw}x{dh}+{rx+(rw-dw)//2}+{ry+(rh-dh)//2}")
-
-    def _delete_album_dialog(self, album_id: int, name: str,
-                             tree: ttk.Treeview):
-        """Ask for confirmation then delete the (empty) album from the server."""
-        if not messagebox.askyesno(
-                "Delete Album",
-                f"Delete the empty album \"{name}\"?\n\nThis cannot be undone.",
-                icon="warning", parent=self.root):
-            return
-
-        self.set_status(f"Deleting album \"{name}\"…")
-
-        def worker():
-            try:
-                params = AlbumHierarchy.load_params()
-                client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
-                    rate_limit_calls_per_second=params.get(
-                        "rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
-                client.delete_album(album_id)
-                client.logout()
-                self.root.after(0, _done)
-            except Exception as e:
-                self.root.after(0, lambda e=e: self.set_status(f"Delete failed: {e}"))
-
-        def _done():
-            self.set_status(f"Deleted album \"{name}\".")
-            self._refresh_hierarchy_on_startup()
-
-        threading.Thread(target=worker, daemon=True).start()
 
     def _on_target_album_selected(self, album_id: int, fullname: str):
         self.target_album_id   = album_id
