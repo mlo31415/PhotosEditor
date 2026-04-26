@@ -278,6 +278,8 @@ class ThumbnailPanel:
         # Tree state (populated by PhotosEditor)
         self.tree_all_items:       list = []
         self.tree_fullname_by_iid: dict = {}
+        self.tree_hierarchy_data:  list = []   # raw hierarchy for filter rebuild
+        self._tree_filtered:       bool = False
 
         self.frame = ttk.Frame(parent)
         self._build(album_var, count_var)
@@ -369,17 +371,61 @@ class ThumbnailPanel:
         fullname = self.tree_fullname_by_iid.get(iid, "")
         self._on_tree_select(album_id, fullname)
 
+    def _rebuild_full_tree(self, select_iid: "str | None" = None):
+        """Restore the full hierarchy from stored data, optionally re-selecting an item."""
+        tree = self.tree
+        for item in tree.get_children():
+            tree.delete(item)
+        self.tree_all_items = []
+        self.tree_fullname_by_iid = {}
+        self._tree_filtered = False
+
+        def _ins(parent_iid, nodes, top_level=False):
+            for node in nodes:
+                iid   = str(node["id"])
+                count = node.get("total_nb_images", 0)
+                text  = f"{node['name']}  ({count:,})"
+                tree.insert(parent_iid, "end", iid=iid, text=text, open=top_level)
+                fullname = node.get("fullname", node["name"])
+                self.tree_all_items.append((iid, node["name"].lower(), fullname))
+                self.tree_fullname_by_iid[iid] = fullname
+                if node.get("children"):
+                    _ins(iid, node["children"])
+
+        _ins("", self.tree_hierarchy_data, top_level=True)
+
+        if select_iid and tree.exists(select_iid):
+            tree.selection_set(select_iid)
+            tree.see(select_iid)
+
     def _on_filter(self, *_):
         q = self._filter_var.get().strip().lower()
         if not q:
-            self.tree.selection_remove(self.tree.selection())
+            sel = self.tree.selection()
+            cur_iid = sel[0] if sel else None
+            self._rebuild_full_tree(select_iid=cur_iid)
             return
-        for iid, name_lower, _ in self.tree_all_items:
-            if q in name_lower:
-                self.tree.selection_set(iid)
-                self.tree.see(iid)
-                return
-        self.tree.selection_remove(self.tree.selection())
+
+        # Build a flat list of all items whose fullname contains the query
+        matches = [(iid, fullname)
+                   for iid, _name_lower, fullname in self.tree_all_items
+                   if q in fullname.lower()]
+
+        tree = self.tree
+        for item in tree.get_children():
+            tree.delete(item)
+        # Don't reset tree_all_items / tree_fullname_by_iid — still needed for rebuild
+        self._tree_filtered = True
+
+        if not matches:
+            return
+
+        for iid, fullname in matches:
+            tree.insert("", "end", iid=iid, text=fullname, open=False)
+
+        first_iid = matches[0][0]
+        tree.selection_set(first_iid)
+        tree.see(first_iid)
 
     # ── Grid helpers ─────────────────────────────────────────────────────────
 
@@ -1214,11 +1260,14 @@ class PhotosEditor:
             logger.warning(f"Could not load hierarchy for {panel.side} tree: {e}")
             return
 
+        panel.tree_hierarchy_data = hierarchy
+
         tree = panel.tree
         for item in tree.get_children():
             tree.delete(item)
         panel.tree_all_items = []
         panel.tree_fullname_by_iid = {}
+        panel._tree_filtered = False
 
         def _populate(parent_iid, nodes, top_level=False):
             for node in nodes:
