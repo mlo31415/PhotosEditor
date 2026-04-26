@@ -671,6 +671,7 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
             self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
             self._editor_dlg.bind("<Control-n>", lambda e: self._add_needs_id_tag())
+            self._editor_dlg.bind("<Control-N>", lambda e: self._remove_needs_id_tag())
             self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
             self._editor_dlg.bind("<Control-h>", lambda e: self._show_shortcuts_help())
         else:
@@ -2840,6 +2841,16 @@ class PhotosEditor:
             current.add('Needs-ID')
             var.set(', '.join(sorted(current)))
 
+    def _remove_needs_id_tag(self):
+        """Remove 'Needs-ID' from the tags field if present."""
+        var = self.custom_vars.get('tags')
+        if var is None:
+            return
+        current = {t.strip() for t in var.get().split(',') if t.strip()}
+        if 'Needs-ID' in current:
+            current.discard('Needs-ID')
+            var.set(', '.join(sorted(current)))
+
     _SHORTCUTS = [
         ("Ctrl+U / Ctrl+S", "Upload current photo"),
         ("Ctrl+Y",          "Crop photo"),
@@ -2848,6 +2859,7 @@ class PhotosEditor:
         ("Ctrl+L",          'Prepend "L-R: " to caption'),
         ("Shift+Ctrl+L",    'Replace caption with "L-R: "'),
         ("Ctrl+N",          'Add "Needs-ID" tag'),
+        ("Shift+Ctrl+N",    'Remove "Needs-ID" tag'),
         ("Escape",          "Close editor"),
         ("Ctrl+H",          "Show this help"),
     ]
