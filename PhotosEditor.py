@@ -314,7 +314,7 @@ class ThumbnailPanel:
             on_select             = on_tree_select,
             on_mutation           = on_tree_mutation,
             set_status            = set_status,
-            select_delay_ms       = 1000,
+            select_delay_ms       = 750,
             on_selection_changing = _cancel_current_load,
         )
         self.atw.frame.pack(fill="both", expand=True)
