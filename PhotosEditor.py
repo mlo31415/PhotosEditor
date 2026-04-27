@@ -545,6 +545,7 @@ class PhotosEditor:
         self._restoration_base:    Image.Image | None = None
         self._restore_after_id:    str | None         = None
         self._restore_generation:  int                = 0
+        self._resetting_sliders:   bool               = False
         self._restore_exposure_var = tk.DoubleVar(value=0.0)
         self._restore_contrast_var = tk.DoubleVar(value=0.0)
         self._restore_red_var      = tk.DoubleVar(value=0.0)
@@ -2373,6 +2374,9 @@ class PhotosEditor:
         # PIL rotates counter-clockwise, so negate for clockwise behaviour
         self._viewer_image = img.rotate(-degrees, expand=True)
         self._photo_edited = True
+        self.photo_dim_var.set(
+            f"{self._viewer_image.width} \u00d7 {self._viewer_image.height} px"
+            f"  |  {self._viewer_image.mode}")
         self._set_restoration_base()
         self._clear_crop_rect()
         self._display_photo()
@@ -2492,6 +2496,8 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     def _on_restoration_change(self, *_):
         """Debounce: wait 120 ms after last slider move before processing."""
+        if self._resetting_sliders:
+            return
         if self._restore_after_id is not None:
             self.root.after_cancel(self._restore_after_id)
         self._restore_after_id = self.root.after(120, self._apply_restoration_bg)
@@ -2531,12 +2537,16 @@ class PhotosEditor:
             self.root.after_cancel(self._restore_after_id)
             self._restore_after_id = None
         self._restore_generation += 1   # cancel any in-flight worker
-        self._restore_exposure_var.set(0.0)
-        self._restore_contrast_var.set(0.0)
-        self._restore_red_var.set(0.0)
-        self._restore_sharpen_var.set(0.0)
-        for lbl, vv in self._restore_val_vars.items():
-            vv.set("0")
+        self._resetting_sliders = True
+        try:
+            self._restore_exposure_var.set(0.0)
+            self._restore_contrast_var.set(0.0)
+            self._restore_red_var.set(0.0)
+            self._restore_sharpen_var.set(0.0)
+            for lbl, vv in self._restore_val_vars.items():
+                vv.set("0")
+        finally:
+            self._resetting_sliders = False
         if self._restoration_base is not None:
             self._viewer_image = self._restoration_base.copy()
             self._display_photo()
@@ -2549,12 +2559,16 @@ class PhotosEditor:
             self.root.after_cancel(self._restore_after_id)
             self._restore_after_id = None
         self._restore_generation += 1
-        self._restore_exposure_var.set(0.0)
-        self._restore_contrast_var.set(0.0)
-        self._restore_red_var.set(0.0)
-        self._restore_sharpen_var.set(0.0)
-        for vv in self._restore_val_vars.values():
-            vv.set("0")
+        self._resetting_sliders = True
+        try:
+            self._restore_exposure_var.set(0.0)
+            self._restore_contrast_var.set(0.0)
+            self._restore_red_var.set(0.0)
+            self._restore_sharpen_var.set(0.0)
+            for vv in self._restore_val_vars.values():
+                vv.set("0")
+        finally:
+            self._resetting_sliders = False
         if self._viewer_image is not None:
             self._restoration_base = self._viewer_image.copy()
 
