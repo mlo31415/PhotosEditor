@@ -670,8 +670,7 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-i>", lambda e: self._open_in_irfanview())
             self._editor_dlg.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
             self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
-            self._editor_dlg.bind("<Control-n>", lambda e: self._add_needs_id_tag())
-            self._editor_dlg.bind("<Control-N>", lambda e: self._remove_needs_id_tag())
+            self._editor_dlg.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
             self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
             self._editor_dlg.bind("<Control-h>", lambda e: self._show_shortcuts_help())
         else:
@@ -2831,25 +2830,17 @@ class PhotosEditor:
         self._validate_caption_field()
         self._validate_date_field()
 
-    def _add_needs_id_tag(self):
-        """Add 'Needs-ID' to the tags field if not already present."""
-        var = self.custom_vars.get('tags')
-        if var is None:
-            return
-        current = {t.strip() for t in var.get().split(',') if t.strip()}
-        if 'Needs-ID' not in current:
-            current.add('Needs-ID')
-            var.set(', '.join(sorted(current)))
-
-    def _remove_needs_id_tag(self):
-        """Remove 'Needs-ID' from the tags field if present."""
+    def _toggle_needs_id_tag(self):
+        """Toggle 'Needs-ID' in the tags field."""
         var = self.custom_vars.get('tags')
         if var is None:
             return
         current = {t.strip() for t in var.get().split(',') if t.strip()}
         if 'Needs-ID' in current:
             current.discard('Needs-ID')
-            var.set(', '.join(sorted(current)))
+        else:
+            current.add('Needs-ID')
+        var.set(', '.join(sorted(current)))
 
     _SHORTCUTS = [
         ("Ctrl+U / Ctrl+S", "Upload current photo"),
@@ -2858,8 +2849,7 @@ class PhotosEditor:
         ("Ctrl+I",          "Open in IrfanView"),
         ("Ctrl+L",          'Prepend "L-R: " to caption'),
         ("Shift+Ctrl+L",    'Replace caption with "L-R: "'),
-        ("Ctrl+N",          'Add "Needs-ID" tag'),
-        ("Shift+Ctrl+N",    'Remove "Needs-ID" tag'),
+        ("Ctrl+N",          'Toggle "Needs-ID" tag'),
         ("Escape",          "Close editor"),
         ("Ctrl+H",          "Show this help"),
     ]
