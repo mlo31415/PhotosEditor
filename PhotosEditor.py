@@ -20,6 +20,7 @@ import tempfile
 import threading
 import logging
 import warnings
+import atexit
 import tkinter as tk
 from tkinter import ttk, messagebox
 from pathlib import Path
@@ -675,12 +676,14 @@ class PhotosEditor:
             self._editor_dlg.bind("<Control-h>", lambda e: self._show_shortcuts_help())
         else:
             self._editor_dlg.deiconify()
+            self._save_current_custom_fields()  # preserve edits before wipe
             self._clear_editor()   # wipe previous image before new one loads
         self._editor_dlg.lift()
         self._editor_dlg.grab_set()
         self._on_thumb_click(img_dict)
 
     def _close_editor_dialog(self):
+        self._save_current_custom_fields()
         if self._photo_edited:
             name = (self._current_image_dict or {}).get("file") or \
                    (self._current_image_dict or {}).get("name") or "this photo"
@@ -1453,9 +1456,11 @@ class PhotosEditor:
             pil.thumbnail(self._thumb_size, Image.Resampling.LANCZOS)
             if gen != panel.load_gen:
                 return
-            panel.thumb_cache[image_id] = pil
-            self.root.after(0, lambda iid=image_id, d=img_dict:
-                panel.add_cell(iid, d) if gen == panel.load_gen else None)
+            def _schedule(iid=image_id, d=img_dict, p=pil):
+                if gen == panel.load_gen:
+                    panel.thumb_cache[iid] = p
+                    panel.add_cell(iid, d)
+            self.root.after(0, _schedule)
         except Exception as e:
             logger.warning(f"Thumbnail {image_id} ({url}): {e}")
 
@@ -1511,6 +1516,12 @@ class PhotosEditor:
     def _on_cell_double(self, img_dict: dict):
         """Open the photo editor dialog on double-click."""
         self._double_click_pending = True
+        if self._drag_window is not None:
+            self._drag_window.destroy()
+            self._drag_window = None
+        self._drag_batch = []
+        self._drag_source_side = None
+        self._press_pos = None
         self._open_editor_dialog(img_dict)
 
     def _start_drag(self, event, img_dict: dict, side: str):
@@ -1834,6 +1845,13 @@ class PhotosEditor:
                 tree.item(iid, text=f"{name}  ({count:,})")
             iid = tree.parent(iid)
 
+    def _panel_for_album(self, album_id: "int | None") -> "ThumbnailPanel | None":
+        """Return whichever panel is currently showing album_id, or None."""
+        for p in (self._source_panel, self._target_panel):
+            if p.shown_album_id == album_id:
+                return p
+        return None
+
     def _apply_move_copy_locally(self, succeeded: list, op: str,
                                  src_album_id: int, dst_album_id: int):
         """Update panels in-place after a successful move/copy; fall back to full reload if needed.
@@ -1841,10 +1859,8 @@ class PhotosEditor:
         Panels are identified by which album they are currently displaying (shown_album_id),
         so this works regardless of which side is source or destination.
         """
-        all_panels = (self._source_panel, self._target_panel)
-
-        src_panel = next((p for p in all_panels if p.shown_album_id == src_album_id), None)
-        dst_panel = next((p for p in all_panels if p.shown_album_id == dst_album_id), None)
+        src_panel = self._panel_for_album(src_album_id)
+        dst_panel = self._panel_for_album(dst_album_id)
 
         if src_panel is None and dst_panel is None:
             self._load_album_photos()
@@ -1896,7 +1912,7 @@ class PhotosEditor:
         # Update album counts in both trees
         n = len(succeeded)
         if n:
-            for panel in all_panels:
+            for panel in (self._source_panel, self._target_panel):
                 if op == 'move':
                     self._adjust_tree_count(panel.tree, src_album_id, -n)
                 self._adjust_tree_count(panel.tree, dst_album_id, +n)
@@ -2174,19 +2190,22 @@ class PhotosEditor:
         suffix = ".jpg" if img.mode in ("RGB", "L") else ".png"
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
         tmp.close()
+        tmp_name = tmp.name
         try:
-            img.save(tmp.name)
+            img.save(tmp_name)
         except Exception as e:
+            os.unlink(tmp_name)
             self.set_status(f"Could not save temp image: {e}")
             return
+        atexit.register(lambda p=tmp_name: os.path.exists(p) and os.unlink(p))
         if exe is None:
             try:
-                os.startfile(tmp.name)
+                os.startfile(tmp_name)
             except Exception as e:
                 self.set_status(f"Could not open image: {e}")
             return
         try:
-            subprocess.Popen([exe, tmp.name, '/fs'])
+            subprocess.Popen([exe, tmp_name, '/fs'])
         except Exception as e:
             self.set_status(f"Could not open IrfanView: {e}")
 
@@ -2336,6 +2355,7 @@ class PhotosEditor:
         """Reload the current photo from Piwigo, discarding unsaved edits."""
         if self._current_image_dict is None:
             return
+        self._restore_generation += 1   # cancel any in-flight restoration worker
         self._on_thumb_click(self._current_image_dict)
 
     # -----------------------------------------------------------------------
