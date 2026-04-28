@@ -506,6 +506,14 @@ class PhotosEditor:
         self._press_pos:            tuple | None = None
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
+        # ── album drag state ────────────────────────────────────────────────
+        self._album_drag_id:         int | None              = None
+        self._album_drag_fullname:   str                     = ""
+        self._album_drag_src_panel:  "ThumbnailPanel | None" = None
+        self._album_drag_window:     tk.Toplevel | None      = None
+        self._album_drag_label:      tk.Label     | None     = None
+        self._album_drag_motion_id:  str                     = ""
+        self._album_drag_release_id: str                     = ""
         self._zoomed:               bool         = False
         self._unzoomed_sash_frac:   float | None = None  # main pane sash as fraction [0,1] before zoom
         self._unzoomed_source_sash: int   | None = None  # source hpane tree-column width before zoom
@@ -627,6 +635,13 @@ class PhotosEditor:
             on_context_menu  = self._on_target_context_menu,
         )
         self._main_pane.add(self._target_panel.frame, weight=2)
+
+        # Wire album-drag callbacks into each panel's tree widget.
+        src, tgt = self._source_panel, self._target_panel
+        src.atw._on_album_drag_start = (
+            lambda aid, fn, x, y: self._on_album_drag_start(src, aid, fn, x, y))
+        tgt.atw._on_album_drag_start = (
+            lambda aid, fn, x, y: self._on_album_drag_start(tgt, aid, fn, x, y))
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -1917,6 +1932,194 @@ class PhotosEditor:
                 if op == 'move':
                     self._adjust_tree_count(panel.tree, src_album_id, -n)
                 self._adjust_tree_count(panel.tree, dst_album_id, +n)
+
+    # -----------------------------------------------------------------------
+    # Album drag-and-drop  (tree → opposite panel's tree or thumbnail area)
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _widget_is_under(widget, ancestor) -> bool:
+        """Return True if widget is ancestor or a descendant of it."""
+        w = widget
+        while w is not None:
+            if w is ancestor:
+                return True
+            w = getattr(w, 'master', None)
+        return False
+
+    def _album_drag_hover_target(self, x_root: int, y_root: int
+                                 ) -> "tuple[int | None, str]":
+        """Return (album_id, display_name) of the destination under the cursor,
+        or (None, '') if the cursor is not over a valid drop zone.
+        Checks both panels so same-side drops are also supported."""
+        widget = self.root.winfo_containing(x_root, y_root)
+        if widget is None:
+            return None, ''
+
+        for panel in (self._source_panel, self._target_panel):
+            # Dropped on a thumbnail canvas / grid → move into that panel's shown album
+            if (self._widget_is_under(widget, panel.canvas) or
+                    self._widget_is_under(widget, panel.grid_frame)):
+                aid = panel.shown_album_id
+                if aid is not None:
+                    name = panel.tree_fullname_by_iid.get(str(aid), str(aid))
+                    return aid, name
+                return None, ''
+
+            # Dropped on an album tree → move into the hovered row
+            if self._widget_is_under(widget, panel.tree):
+                xloc = x_root - panel.tree.winfo_rootx()
+                yloc = y_root - panel.tree.winfo_rooty()
+                iid  = panel.tree.identify_row(yloc)
+                if iid:
+                    try:
+                        dst_id = int(iid)
+                    except ValueError:
+                        return None, ''
+                    name = panel.tree_fullname_by_iid.get(iid, iid)
+                    return dst_id, name
+
+        return None, ''
+
+    def _is_album_descendant(self, atw, ancestor_id: int,
+                              candidate_id: int) -> bool:
+        """Return True if candidate is the ancestor or one of its descendants."""
+        if ancestor_id == candidate_id:
+            return True
+        iid = str(candidate_id)
+        while iid:
+            parent = atw._parent_iid_by_iid.get(iid, '')
+            if parent == str(ancestor_id):
+                return True
+            iid = parent
+        return False
+
+    def _on_album_drag_start(self, panel: "ThumbnailPanel",
+                             album_id: int, fullname: str,
+                             x_root: int, y_root: int):
+        if self._drag_window is not None:   # photo drag already in progress
+            return
+        self._album_drag_id       = album_id
+        self._album_drag_fullname = fullname
+        self._album_drag_src_panel = panel
+
+        short = fullname.rsplit(' / ', 1)[-1]
+        tip = tk.Toplevel(self.root)
+        tip.wm_overrideredirect(True)
+        tip.wm_attributes("-topmost", True)
+        lbl = tk.Label(tip, text=f"Move album  \"{short}\"",
+                       bg="#ffffc0", fg="#000000",
+                       relief="solid", bd=1,
+                       font=("TkDefaultFont", 9), padx=6, pady=3)
+        lbl.pack()
+        tip.wm_geometry(f"+{x_root + 14}+{y_root + 14}")
+        self._album_drag_window = tip
+        self._album_drag_label  = lbl
+
+        self._album_drag_motion_id  = self.root.bind(
+            "<Motion>", self._on_album_drag_motion, add=True)
+        self._album_drag_release_id = self.root.bind(
+            "<ButtonRelease-1>", self._on_album_drag_release, add=True)
+
+    def _on_album_drag_motion(self, event):
+        if self._album_drag_window is None:
+            return
+        x, y = event.x_root, event.y_root
+        self._album_drag_window.wm_geometry(f"+{x + 14}+{y + 14}")
+        dst_id, dst_name = self._album_drag_hover_target(x, y)
+        short = self._album_drag_fullname.rsplit(' / ', 1)[-1]
+        if dst_name:
+            self._album_drag_label.config(
+                text=f"Move album  \"{short}\"\n→  \"{dst_name}\"")
+        else:
+            self._album_drag_label.config(text=f"Move album  \"{short}\"")
+
+    def _on_album_drag_release(self, event):
+        if self._album_drag_window is None:
+            return
+        self._album_drag_window.destroy()
+        self._album_drag_window = None
+        self._album_drag_label  = None
+        try:
+            self.root.unbind("<Motion>", self._album_drag_motion_id)
+            self.root.unbind("<ButtonRelease-1>", self._album_drag_release_id)
+        except Exception:
+            pass
+
+        album_id  = self._album_drag_id
+        fullname  = self._album_drag_fullname
+        src_panel = self._album_drag_src_panel
+        self._album_drag_id        = None
+        self._album_drag_fullname  = ""
+        self._album_drag_src_panel = None
+
+        if album_id is None:
+            return
+
+        dst_id, dst_name = self._album_drag_hover_target(
+            event.x_root, event.y_root)
+        if dst_id is None:
+            return
+
+        # Validate: can't move album into itself or a descendant
+        if self._is_album_descendant(src_panel.atw, album_id, dst_id):
+            short = fullname.rsplit(' / ', 1)[-1]
+            messagebox.showerror(
+                "Invalid Move",
+                f'Cannot move "{short}" into itself or one of its own sub-albums.',
+                parent=self.root)
+            return
+
+        self._execute_album_move(album_id, fullname, dst_id, dst_name)
+
+    def _execute_album_move(self, album_id: int, fullname: str,
+                            dst_id: int, dst_name: str):
+        short = fullname.rsplit(' / ', 1)[-1]
+        if not messagebox.askyesno(
+                "Move Album",
+                f'Move album "{short}" to be a sub-album of "{dst_name}"?',
+                parent=self.root):
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Moving album…")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
+        ttk.Label(dlg, text=f'Moving "{short}"…', padding=(16, 12, 16, 8)).pack()
+        bar = ttk.Progressbar(dlg, mode='indeterminate', length=280)
+        bar.pack(padx=16, pady=(0, 12))
+        bar.start(12)
+
+        def worker():
+            try:
+                params = AlbumHierarchy.load_params()
+                client = AlbumHierarchy.PiwigoClient(
+                    params["url"], params["username"], params["password"],
+                    verify_ssl=params.get("verify_ssl", True),
+                    rate_limit_calls_per_second=params.get(
+                        "rate_limit_calls_per_second", 2.0))
+                client.login(params["username"], params["password"])
+                client.move_album(album_id, dst_id)
+                AlbumHierarchy._fetch_and_save_hierarchy(client, lambda _: None)
+                client.logout()
+                self.root.after(0, finish_ok)
+            except Exception as exc:
+                err = str(exc)
+                self.root.after(0, lambda: finish_err(err))
+
+        def finish_ok():
+            bar.stop(); dlg.grab_release(); dlg.destroy()
+            self.set_status(f'Album "{short}" moved under "{dst_name}".')
+            self._populate_source_hierarchy_tree()
+            self._populate_hierarchy_tree()
+
+        def finish_err(err):
+            bar.stop(); dlg.grab_release(); dlg.destroy()
+            messagebox.showerror("Move Failed", err, parent=self.root)
+            self.set_status(f'Album move failed: {err}')
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # -----------------------------------------------------------------------
     # Undo last drag-and-drop operation
