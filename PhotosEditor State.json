@@ -1,9 +1,10 @@
 {
-  "geometry": "1920x1009+-1930+151",
-  "sash": 954,
-  "album_id": 680,
-  "album_name": "Worldcons / MagiCon (1992) / Masquerade",
-  "target_album_id": 429,
-  "target_album_name": "Worldcons / MagiCon (1992)",
-  "editor_geometry": "900x815+-1283+191"
+  "geometry": "1920x1009+-1924+115",
+  "sash": 1530,
+  "album_id": 652,
+  "album_name": "Fan Photos / ZZtest / yyTest",
+  "target_album_id": 738,
+  "target_album_name": "Fan Photos / NESFA / The NESFA Clubhouse / Deconstuction 1986",
+  "editor_geometry": "900x815+-1067+253",
+  "sash_frac": 0.46809623430962344
 }

@@ -696,6 +696,7 @@ class PhotosEditor:
             self._clear_editor()   # wipe previous image before new one loads
         self._editor_dlg.lift()
         self._editor_dlg.grab_set()
+        self._editor_dlg.focus_force()
         self._on_thumb_click(img_dict)
 
     def _close_editor_dialog(self):

@@ -3,13 +3,13 @@
     "id": 48,
     "name": "Fan Photos",
     "nb_images": 0,
-    "total_nb_images": 963,
+    "total_nb_images": 1189,
     "children": [
       {
         "id": 49,
         "name": "Ackermansion",
-        "nb_images": 53,
-        "total_nb_images": 53,
+        "nb_images": 54,
+        "total_nb_images": 54,
         "children": [],
         "fullname": "Fan Photos / Ackermansion"
       },
@@ -60,6 +60,40 @@
         "total_nb_images": 2,
         "children": [],
         "fullname": "Fan Photos / Bill Burns Party, September 2014, USA"
+      },
+      {
+        "id": 698,
+        "name": "By Year",
+        "nb_images": 0,
+        "total_nb_images": 9,
+        "children": [
+          {
+            "id": 710,
+            "name": "2006",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Fan Photos / By Year / 2006"
+          },
+          {
+            "id": 699,
+            "name": "2008",
+            "nb_images": 0,
+            "total_nb_images": 9,
+            "children": [
+              {
+                "id": 700,
+                "name": "2008, July - Moshe Feder's Party",
+                "nb_images": 9,
+                "total_nb_images": 9,
+                "children": [],
+                "fullname": "Fan Photos / By Year / 2008 / 2008, July - Moshe Feder's Party"
+              }
+            ],
+            "fullname": "Fan Photos / By Year / 2008"
+          }
+        ],
+        "fullname": "Fan Photos / By Year"
       },
       {
         "id": 57,
@@ -128,8 +162,8 @@
       {
         "id": 65,
         "name": "Fans Around the World",
-        "nb_images": 4,
-        "total_nb_images": 4,
+        "nb_images": 3,
+        "total_nb_images": 3,
         "children": [],
         "fullname": "Fan Photos / Fans Around the World"
       },
@@ -156,6 +190,31 @@
         "total_nb_images": 1,
         "children": [],
         "fullname": "Fan Photos / Japanese fandom"
+      },
+      {
+        "id": 691,
+        "name": "Joe & Edie's Parties",
+        "nb_images": 0,
+        "total_nb_images": 42,
+        "children": [
+          {
+            "id": 711,
+            "name": "2006 - August",
+            "nb_images": 18,
+            "total_nb_images": 18,
+            "children": [],
+            "fullname": "Fan Photos / Joe & Edie's Parties / 2006 - August"
+          },
+          {
+            "id": 692,
+            "name": "2008 - August",
+            "nb_images": 24,
+            "total_nb_images": 24,
+            "children": [],
+            "fullname": "Fan Photos / Joe & Edie's Parties / 2008 - August"
+          }
+        ],
+        "fullname": "Fan Photos / Joe & Edie's Parties"
       },
       {
         "id": 71,
@@ -224,9 +283,75 @@
       {
         "id": 80,
         "name": "NESFA",
-        "nb_images": 16,
-        "total_nb_images": 16,
-        "children": [],
+        "nb_images": 21,
+        "total_nb_images": 181,
+        "children": [
+          {
+            "id": 735,
+            "name": "James White Recieves Skylark Award 1998-03",
+            "nb_images": 5,
+            "total_nb_images": 5,
+            "children": [],
+            "fullname": "Fan Photos / NESFA / James White Recieves Skylark Award 1998-03"
+          },
+          {
+            "id": 725,
+            "name": "NESFA Sales at Torcon 3 2003-08",
+            "nb_images": 4,
+            "total_nb_images": 4,
+            "children": [],
+            "fullname": "Fan Photos / NESFA / NESFA Sales at Torcon 3 2003-08"
+          },
+          {
+            "id": 734,
+            "name": "Priscillacon (party) 2001-12",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Fan Photos / NESFA / Priscillacon (party) 2001-12"
+          },
+          {
+            "id": 720,
+            "name": "Sorting Geroge's Flynn's Books 2005-04",
+            "nb_images": 10,
+            "total_nb_images": 10,
+            "children": [],
+            "fullname": "Fan Photos / NESFA / Sorting Geroge's Flynn's Books 2005-04"
+          },
+          {
+            "id": 737,
+            "name": "The NESFA Clubhouse",
+            "nb_images": 5,
+            "total_nb_images": 141,
+            "children": [
+              {
+                "id": 690,
+                "name": "Clubhouse Construction",
+                "nb_images": 54,
+                "total_nb_images": 54,
+                "children": [],
+                "fullname": "Fan Photos / NESFA / The NESFA Clubhouse / Clubhouse Construction"
+              },
+              {
+                "id": 718,
+                "name": "Clubhouse Reorganization 2006-04",
+                "nb_images": 11,
+                "total_nb_images": 11,
+                "children": [],
+                "fullname": "Fan Photos / NESFA / The NESFA Clubhouse / Clubhouse Reorganization 2006-04"
+              },
+              {
+                "id": 738,
+                "name": "Deconstuction 1986",
+                "nb_images": 71,
+                "total_nb_images": 71,
+                "children": [],
+                "fullname": "Fan Photos / NESFA / The NESFA Clubhouse / Deconstuction 1986"
+              }
+            ],
+            "fullname": "Fan Photos / NESFA / The NESFA Clubhouse"
+          }
+        ],
         "fullname": "Fan Photos / NESFA"
       },
       {
@@ -360,14 +485,14 @@
       {
         "id": 99,
         "name": "UK Fandom",
-        "nb_images": 9,
-        "total_nb_images": 9,
+        "nb_images": 10,
+        "total_nb_images": 15,
         "children": [
           {
             "id": 665,
             "name": "1950s UK Fandom",
-            "nb_images": 0,
-            "total_nb_images": 0,
+            "nb_images": 5,
+            "total_nb_images": 5,
             "children": [],
             "fullname": "Fan Photos / UK Fandom / 1950s UK Fandom"
           }
@@ -409,15 +534,24 @@
       {
         "id": 627,
         "name": "ZZtest",
-        "nb_images": 17,
-        "total_nb_images": 27,
+        "nb_images": 18,
+        "total_nb_images": 31,
         "children": [
           {
             "id": 652,
             "name": "yyTest",
             "nb_images": 10,
-            "total_nb_images": 10,
-            "children": [],
+            "total_nb_images": 13,
+            "children": [
+              {
+                "id": 674,
+                "name": "xxTest",
+                "nb_images": 3,
+                "total_nb_images": 3,
+                "children": [],
+                "fullname": "Fan Photos / ZZtest / yyTest / xxTest"
+              }
+            ],
             "fullname": "Fan Photos / ZZtest / yyTest"
           }
         ],
@@ -427,25 +561,34 @@
     "fullname": "Fan Photos"
   },
   {
-    "id": 653,
-    "name": "Laurie Mann -- TEST",
-    "nb_images": 29,
-    "total_nb_images": 29,
-    "children": [],
-    "fullname": "Laurie Mann -- TEST"
-  },
-  {
     "id": 629,
     "name": "Personal Albums",
     "nb_images": 0,
-    "total_nb_images": 451,
+    "total_nb_images": 544,
     "children": [
+      {
+        "id": 689,
+        "name": "Bob Tucker's Photo Album",
+        "nb_images": 71,
+        "total_nb_images": 71,
+        "children": [],
+        "fullname": "Personal Albums / Bob Tucker's Photo Album"
+      },
       {
         "id": 56,
         "name": "Buz and Elinor Busby Photo Album",
-        "nb_images": 78,
-        "total_nb_images": 78,
-        "children": [],
+        "nb_images": 81,
+        "total_nb_images": 100,
+        "children": [
+          {
+            "id": 687,
+            "name": "1964",
+            "nb_images": 19,
+            "total_nb_images": 19,
+            "children": [],
+            "fullname": "Personal Albums / Buz and Elinor Busby Photo Album / 1964"
+          }
+        ],
         "fullname": "Personal Albums / Buz and Elinor Busby Photo Album"
       },
       {
@@ -494,8 +637,8 @@
   {
     "id": 628,
     "name": "Portraits",
-    "nb_images": 1,
-    "total_nb_images": 1,
+    "nb_images": 2,
+    "total_nb_images": 2,
     "children": [],
     "fullname": "Portraits"
   },
@@ -503,7 +646,7 @@
     "id": 154,
     "name": "Regional Conventions",
     "nb_images": 0,
-    "total_nb_images": 2148,
+    "total_nb_images": 2741,
     "children": [
       {
         "id": 155,
@@ -691,127 +834,185 @@
         "id": 171,
         "name": "Boskone",
         "nb_images": 0,
-        "total_nb_images": 254,
+        "total_nb_images": 510,
         "children": [
           {
             "id": 172,
-            "name": "Boskone 01",
+            "name": "Boskone 01 (1965)",
             "nb_images": 19,
             "total_nb_images": 19,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 01"
+            "fullname": "Regional Conventions / Boskone / Boskone 01 (1965)"
           },
           {
             "id": 173,
-            "name": "Boskone 13",
+            "name": "Boskone 13 (1976)",
             "nb_images": 20,
             "total_nb_images": 20,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 13"
+            "fullname": "Regional Conventions / Boskone / Boskone 13 (1976)"
           },
           {
             "id": 527,
-            "name": "Boskone 15",
+            "name": "Boskone 15 (1978)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 15"
+            "fullname": "Regional Conventions / Boskone / Boskone 15 (1978)"
           },
           {
             "id": 528,
-            "name": "Boskone 18",
+            "name": "Boskone 18 (1981)",
             "nb_images": 25,
             "total_nb_images": 25,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 18"
+            "fullname": "Regional Conventions / Boskone / Boskone 18 (1981)"
+          },
+          {
+            "id": 739,
+            "name": "Boskone 24 (1987)",
+            "nb_images": 17,
+            "total_nb_images": 17,
+            "children": [],
+            "fullname": "Regional Conventions / Boskone / Boskone 24 (1987)"
           },
           {
             "id": 174,
-            "name": "Boskone 28",
+            "name": "Boskone 28 (1991)",
             "nb_images": 24,
             "total_nb_images": 24,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 28"
+            "fullname": "Regional Conventions / Boskone / Boskone 28 (1991)"
           },
           {
             "id": 175,
-            "name": "Boskone 29",
+            "name": "Boskone 29 (1992)",
             "nb_images": 49,
             "total_nb_images": 49,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 29"
+            "fullname": "Regional Conventions / Boskone / Boskone 29 (1992)"
           },
           {
             "id": 176,
-            "name": "Boskone 31",
+            "name": "Boskone 31 (1994)",
             "nb_images": 9,
             "total_nb_images": 9,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 31"
+            "fullname": "Regional Conventions / Boskone / Boskone 31 (1994)"
           },
           {
             "id": 177,
-            "name": "Boskone 32",
+            "name": "Boskone 32 (1995)",
             "nb_images": 20,
             "total_nb_images": 20,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 32"
+            "fullname": "Regional Conventions / Boskone / Boskone 32 (1995)"
           },
           {
             "id": 178,
-            "name": "Boskone 35",
+            "name": "Boskone 35 (1998)",
             "nb_images": 12,
             "total_nb_images": 12,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 35"
+            "fullname": "Regional Conventions / Boskone / Boskone 35 (1998)"
           },
           {
             "id": 179,
-            "name": "Boskone 36",
+            "name": "Boskone 36 (1999)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 36"
+            "fullname": "Regional Conventions / Boskone / Boskone 36 (1999)"
           },
           {
             "id": 180,
-            "name": "Boskone 38",
-            "nb_images": 7,
-            "total_nb_images": 7,
+            "name": "Boskone 38 (2001)",
+            "nb_images": 61,
+            "total_nb_images": 61,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 38"
+            "fullname": "Regional Conventions / Boskone / Boskone 38 (2001)"
           },
           {
-            "id": 181,
-            "name": "Boskone 40",
-            "nb_images": 8,
-            "total_nb_images": 8,
-            "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 40"
-          },
-          {
-            "id": 182,
-            "name": "Boskone 46",
-            "nb_images": 39,
-            "total_nb_images": 39,
-            "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 46"
-          },
-          {
-            "id": 658,
-            "name": "Boskone 54",
-            "nb_images": 0,
-            "total_nb_images": 0,
-            "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 54"
-          },
-          {
-            "id": 183,
-            "name": "Boskone 57",
+            "id": 733,
+            "name": "Boskone 39 (2002)",
             "nb_images": 19,
             "total_nb_images": 19,
             "children": [],
-            "fullname": "Regional Conventions / Boskone / Boskone 57"
+            "fullname": "Regional Conventions / Boskone / Boskone 39 (2002)"
+          },
+          {
+            "id": 181,
+            "name": "Boskone 40 (2003)",
+            "nb_images": 8,
+            "total_nb_images": 33,
+            "children": [
+              {
+                "id": 729,
+                "name": "April-May 2002 Sheraton tour",
+                "nb_images": 25,
+                "total_nb_images": 25,
+                "children": [],
+                "fullname": "Regional Conventions / Boskone / Boskone 40 (2003) / April-May 2002 Sheraton tour"
+              }
+            ],
+            "fullname": "Regional Conventions / Boskone / Boskone 40 (2003)"
+          },
+          {
+            "id": 719,
+            "name": "Boskone 43 (2006)",
+            "nb_images": 40,
+            "total_nb_images": 40,
+            "children": [],
+            "fullname": "Regional Conventions / Boskone / Boskone 43 (2006)"
+          },
+          {
+            "id": 706,
+            "name": "Boskone 44 (2007)",
+            "nb_images": 35,
+            "total_nb_images": 101,
+            "children": [
+              {
+                "id": 712,
+                "name": "First Look at New Hotel",
+                "nb_images": 45,
+                "total_nb_images": 45,
+                "children": [],
+                "fullname": "Regional Conventions / Boskone / Boskone 44 (2007) / First Look at New Hotel"
+              },
+              {
+                "id": 707,
+                "name": "Hubert Rogers Exhibit",
+                "nb_images": 21,
+                "total_nb_images": 21,
+                "children": [],
+                "fullname": "Regional Conventions / Boskone / Boskone 44 (2007) / Hubert Rogers Exhibit"
+              }
+            ],
+            "fullname": "Regional Conventions / Boskone / Boskone 44 (2007)"
+          },
+          {
+            "id": 182,
+            "name": "Boskone 46 (2009)",
+            "nb_images": 39,
+            "total_nb_images": 39,
+            "children": [],
+            "fullname": "Regional Conventions / Boskone / Boskone 46 (2009)"
+          },
+          {
+            "id": 658,
+            "name": "Boskone 54 (2017)",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Regional Conventions / Boskone / Boskone 54 (2017)"
+          },
+          {
+            "id": 183,
+            "name": "Boskone 57 2020)",
+            "nb_images": 19,
+            "total_nb_images": 19,
+            "children": [],
+            "fullname": "Regional Conventions / Boskone / Boskone 57 2020)"
           }
         ],
         "fullname": "Regional Conventions / Boskone"
@@ -969,23 +1170,31 @@
         "id": 191,
         "name": "ConQuesT",
         "nb_images": 0,
-        "total_nb_images": 10,
+        "total_nb_images": 15,
         "children": [
           {
             "id": 192,
-            "name": "ConQuesT 30",
+            "name": "ConQuesT 30 (1999)",
             "nb_images": 4,
             "total_nb_images": 4,
             "children": [],
-            "fullname": "Regional Conventions / ConQuesT / ConQuesT 30"
+            "fullname": "Regional Conventions / ConQuesT / ConQuesT 30 (1999)"
           },
           {
             "id": 193,
-            "name": "ConQuesT 31",
+            "name": "ConQuesT 31 (2000)",
             "nb_images": 6,
             "total_nb_images": 6,
             "children": [],
-            "fullname": "Regional Conventions / ConQuesT / ConQuesT 31"
+            "fullname": "Regional Conventions / ConQuesT / ConQuesT 31 (2000)"
+          },
+          {
+            "id": 717,
+            "name": "ConQuesT 37 (2006)",
+            "nb_images": 5,
+            "total_nb_images": 5,
+            "children": [],
+            "fullname": "Regional Conventions / ConQuesT / ConQuesT 37 (2006)"
           }
         ],
         "fullname": "Regional Conventions / ConQuesT"
@@ -1067,7 +1276,7 @@
         "id": 206,
         "name": "DeepSouthCon",
         "nb_images": 0,
-        "total_nb_images": 54,
+        "total_nb_images": 61,
         "children": [
           {
             "id": 207,
@@ -1112,8 +1321,8 @@
           {
             "id": 209,
             "name": "DeepSouthCon 15",
-            "nb_images": 2,
-            "total_nb_images": 2,
+            "nb_images": 9,
+            "total_nb_images": 9,
             "children": [],
             "fullname": "Regional Conventions / DeepSouthCon / DeepSouthCon 15"
           },
@@ -1365,7 +1574,7 @@
         "id": 232,
         "name": "Ditto",
         "nb_images": 0,
-        "total_nb_images": 4,
+        "total_nb_images": 20,
         "children": [
           {
             "id": 234,
@@ -1374,6 +1583,14 @@
             "total_nb_images": 1,
             "children": [],
             "fullname": "Regional Conventions / Ditto / Ditto 01"
+          },
+          {
+            "id": 736,
+            "name": "Ditto 1997-10",
+            "nb_images": 16,
+            "total_nb_images": 16,
+            "children": [],
+            "fullname": "Regional Conventions / Ditto / Ditto 1997-10"
           },
           {
             "id": 233,
@@ -1390,8 +1607,16 @@
         "id": 235,
         "name": "Eastercon",
         "nb_images": 0,
-        "total_nb_images": 85,
+        "total_nb_images": 108,
         "children": [
+          {
+            "id": 740,
+            "name": "Eastercon 1961 - Lexicon",
+            "nb_images": 23,
+            "total_nb_images": 23,
+            "children": [],
+            "fullname": "Regional Conventions / Eastercon / Eastercon 1961 - Lexicon"
+          },
           {
             "id": 609,
             "name": "Eastercon 1973",
@@ -1478,28 +1703,36 @@
       },
       {
         "id": 242,
-        "name": "Fourth_Street",
+        "name": "Fourth Street Fantasy",
         "nb_images": 0,
-        "total_nb_images": 30,
+        "total_nb_images": 67,
         "children": [
           {
             "id": 243,
-            "name": "Fourth_Street 06",
+            "name": "Fourth Street Fantasy 1991",
             "nb_images": 17,
             "total_nb_images": 17,
             "children": [],
-            "fullname": "Regional Conventions / Fourth_Street / Fourth_Street 06"
+            "fullname": "Regional Conventions / Fourth Street Fantasy / Fourth Street Fantasy 1991"
           },
           {
             "id": 244,
-            "name": "Fourth_Street 08",
+            "name": "Fourth Street Fantasy 1994",
             "nb_images": 13,
             "total_nb_images": 13,
             "children": [],
-            "fullname": "Regional Conventions / Fourth_Street / Fourth_Street 08"
+            "fullname": "Regional Conventions / Fourth Street Fantasy / Fourth Street Fantasy 1994"
+          },
+          {
+            "id": 702,
+            "name": "Fourth Street Fantasy 2008",
+            "nb_images": 37,
+            "total_nb_images": 37,
+            "children": [],
+            "fullname": "Regional Conventions / Fourth Street Fantasy / Fourth Street Fantasy 2008"
           }
         ],
-        "fullname": "Regional Conventions / Fourth_Street"
+        "fullname": "Regional Conventions / Fourth Street Fantasy"
       },
       {
         "id": 654,
@@ -1605,55 +1838,71 @@
         "id": 254,
         "name": "Lunacon",
         "nb_images": 0,
-        "total_nb_images": 49,
+        "total_nb_images": 91,
         "children": [
           {
             "id": 255,
-            "name": "Lunacon 06",
+            "name": "Lunacon 06 (1962)",
             "nb_images": 10,
             "total_nb_images": 10,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 06"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 06 (1962)"
           },
           {
             "id": 256,
-            "name": "Lunacon 22",
+            "name": "Lunacon 22 (1979)",
             "nb_images": 25,
             "total_nb_images": 25,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 22"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 22 (1979)"
           },
           {
             "id": 579,
-            "name": "Lunacon 27",
+            "name": "Lunacon 27 (1984)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 27"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 27 (1984)"
           },
           {
             "id": 581,
-            "name": "Lunacon 38",
+            "name": "Lunacon 38 (1995)",
             "nb_images": 10,
             "total_nb_images": 10,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 38"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 38 (1995)"
           },
           {
             "id": 580,
-            "name": "Lunacon 40",
+            "name": "Lunacon 40 (1997)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 40"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 40 (1997)"
           },
           {
             "id": 257,
-            "name": "Lunacon 43",
+            "name": "Lunacon 43 (2000)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / Lunacon / Lunacon 43"
+            "fullname": "Regional Conventions / Lunacon / Lunacon 43 (2000)"
+          },
+          {
+            "id": 732,
+            "name": "Lunacon 45 (2002)",
+            "nb_images": 3,
+            "total_nb_images": 3,
+            "children": [],
+            "fullname": "Regional Conventions / Lunacon / Lunacon 45 (2002)"
+          },
+          {
+            "id": 705,
+            "name": "Lunacon 50 (2007)",
+            "nb_images": 39,
+            "total_nb_images": 39,
+            "children": [],
+            "fullname": "Regional Conventions / Lunacon / Lunacon 50 (2007)"
           }
         ],
         "fullname": "Regional Conventions / Lunacon"
@@ -1695,167 +1944,191 @@
         "id": 260,
         "name": "MidwestCon",
         "nb_images": 0,
-        "total_nb_images": 141,
+        "total_nb_images": 180,
         "children": [
           {
             "id": 261,
-            "name": "MidwestCon 01",
+            "name": "MidwestCon 01 (1950",
             "nb_images": 12,
             "total_nb_images": 12,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 01"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 01 (1950"
           },
           {
             "id": 262,
-            "name": "MidwestCon 02",
+            "name": "MidwestCon 02 (1951)",
             "nb_images": 20,
             "total_nb_images": 20,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 02"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 02 (1951)"
           },
           {
             "id": 263,
-            "name": "MidwestCon 03",
+            "name": "MidwestCon 03 (1952)",
             "nb_images": 25,
             "total_nb_images": 25,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 03"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 03 (1952)"
           },
           {
             "id": 264,
-            "name": "MidwestCon 04",
+            "name": "MidwestCon 04 (1953)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 04"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 04 (1953)"
           },
           {
             "id": 265,
-            "name": "MidwestCon 17",
+            "name": "MidwestCon 17 (1966)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 17"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 17 (1966)"
           },
           {
             "id": 266,
-            "name": "MidwestCon 19",
+            "name": "MidwestCon 19 (1968)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 19"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 19 (1968)"
           },
           {
             "id": 613,
-            "name": "MidwestCon 25",
+            "name": "MidwestCon 25 (1974)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 25"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 25 (1974)"
           },
           {
             "id": 267,
-            "name": "MidwestCon 27",
+            "name": "MidwestCon 27 (1976)",
             "nb_images": 4,
             "total_nb_images": 4,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 27"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 27 (1976)"
           },
           {
             "id": 268,
-            "name": "MidwestCon 28",
+            "name": "MidwestCon 28 (1977)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 28"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 28 (1977)"
           },
           {
             "id": 269,
-            "name": "MidwestCon 40",
+            "name": "MidwestCon 40 (1989)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 40"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 40 (1989)"
           },
           {
             "id": 270,
-            "name": "MidwestCon 41",
+            "name": "MidwestCon 41 (1990)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 41"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 41 (1990)"
           },
           {
             "id": 271,
-            "name": "MidwestCon 43",
+            "name": "MidwestCon 43 (1992)",
             "nb_images": 23,
             "total_nb_images": 23,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 43"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 43 (1992)"
           },
           {
             "id": 272,
-            "name": "MidwestCon 45",
+            "name": "MidwestCon 45 (1994)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 45"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 45 (1994)"
           },
           {
             "id": 273,
-            "name": "MidwestCon 47",
+            "name": "MidwestCon 47 (1996)",
             "nb_images": 8,
             "total_nb_images": 8,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 47"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 47 (1996)"
           },
           {
             "id": 274,
-            "name": "MidwestCon 48",
+            "name": "MidwestCon 48 (1997)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 48"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 48 (1997)"
           },
           {
             "id": 275,
-            "name": "MidwestCon 49",
+            "name": "MidwestCon 49 (1998)",
             "nb_images": 16,
             "total_nb_images": 16,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 49"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 49 (1998)"
           },
           {
             "id": 276,
-            "name": "MidwestCon 50",
+            "name": "MidwestCon 50 (1999)",
             "nb_images": 6,
             "total_nb_images": 6,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 50"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 50 (1999)"
           },
           {
             "id": 277,
-            "name": "MidwestCon 51",
+            "name": "MidwestCon 51 (2000)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 51"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 51 (2000)"
+          },
+          {
+            "id": 728,
+            "name": "Midwestcon 53 (2002)",
+            "nb_images": 5,
+            "total_nb_images": 5,
+            "children": [],
+            "fullname": "Regional Conventions / MidwestCon / Midwestcon 53 (2002)"
           },
           {
             "id": 278,
-            "name": "MidwestCon 56",
+            "name": "MidwestCon 56 (2005)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 56"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 56 (2005)"
           },
           {
             "id": 279,
-            "name": "MidwestCon 57",
+            "name": "MidwestCon 57 (2006)",
             "nb_images": 8,
             "total_nb_images": 8,
             "children": [],
-            "fullname": "Regional Conventions / MidwestCon / MidwestCon 57"
+            "fullname": "Regional Conventions / MidwestCon / MidwestCon 57 (2006)"
+          },
+          {
+            "id": 704,
+            "name": "Midwestcon 58 (2007)",
+            "nb_images": 15,
+            "total_nb_images": 15,
+            "children": [],
+            "fullname": "Regional Conventions / MidwestCon / Midwestcon 58 (2007)"
+          },
+          {
+            "id": 701,
+            "name": "Midwestcon 59 (2008)",
+            "nb_images": 19,
+            "total_nb_images": 19,
+            "children": [],
+            "fullname": "Regional Conventions / MidwestCon / Midwestcon 59 (2008)"
           }
         ],
         "fullname": "Regional Conventions / MidwestCon"
@@ -1897,59 +2170,67 @@
         "id": 283,
         "name": "Minicon",
         "nb_images": 0,
-        "total_nb_images": 83,
+        "total_nb_images": 89,
         "children": [
           {
             "id": 284,
-            "name": "Minicon 08",
+            "name": "Minicon 08 (1974)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 08"
+            "fullname": "Regional Conventions / Minicon / Minicon 08 (1974)"
           },
           {
             "id": 285,
-            "name": "Minicon 09",
+            "name": "Minicon 09 (1974)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 09"
+            "fullname": "Regional Conventions / Minicon / Minicon 09 (1974)"
           },
           {
             "id": 286,
-            "name": "Minicon 10",
+            "name": "Minicon 10 (1975)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 10"
+            "fullname": "Regional Conventions / Minicon / Minicon 10 (1975)"
           },
           {
             "id": 287,
-            "name": "Minicon 25",
+            "name": "Minicon 25 (1990)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 25"
+            "fullname": "Regional Conventions / Minicon / Minicon 25 (1990)"
           },
           {
             "id": 288,
-            "name": "Minicon 34",
+            "name": "Minicon 34 (1999)",
             "nb_images": 3,
             "total_nb_images": 3,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 34"
+            "fullname": "Regional Conventions / Minicon / Minicon 34 (1999)"
+          },
+          {
+            "id": 731,
+            "name": "Minicon 37 (2002)",
+            "nb_images": 6,
+            "total_nb_images": 6,
+            "children": [],
+            "fullname": "Regional Conventions / Minicon / Minicon 37 (2002)"
           },
           {
             "id": 289,
-            "name": "Minicon 39",
+            "name": "Minicon 39 (2004)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / Minicon / Minicon 39"
+            "fullname": "Regional Conventions / Minicon / Minicon 39 (2004)"
           },
           {
             "id": 663,
-            "name": "Minicon 50",
+            "name": "Minicon 50 (2015)",
             "nb_images": 0,
             "total_nb_images": 70,
             "children": [
@@ -1959,10 +2240,10 @@
                 "nb_images": 70,
                 "total_nb_images": 70,
                 "children": [],
-                "fullname": "Regional Conventions / Minicon / Minicon 50 / 50th Anniversary Celebration"
+                "fullname": "Regional Conventions / Minicon / Minicon 50 (2015) / 50th Anniversary Celebration"
               }
             ],
-            "fullname": "Regional Conventions / Minicon / Minicon 50"
+            "fullname": "Regional Conventions / Minicon / Minicon 50 (2015)"
           }
         ],
         "fullname": "Regional Conventions / Minicon"
@@ -2004,55 +2285,55 @@
         "id": 293,
         "name": "NASFiC",
         "nb_images": 0,
-        "total_nb_images": 88,
+        "total_nb_images": 91,
         "children": [
           {
             "id": 616,
-            "name": "NASFIC 01",
+            "name": "NASFIC 01 (1975) - Los Angeles",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFIC 01"
+            "fullname": "Regional Conventions / NASFiC / NASFIC 01 (1975) - Los Angeles"
           },
           {
             "id": 294,
-            "name": "NASFiC 02",
+            "name": "NASFiC 02 (1979) - Lousiville, KY",
             "nb_images": 23,
             "total_nb_images": 23,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFiC 02"
+            "fullname": "Regional Conventions / NASFiC / NASFiC 02 (1979) - Lousiville, KY"
           },
           {
             "id": 295,
-            "name": "NASFiC 03",
+            "name": "NASFiC 03 (1985) - Austin, TX",
             "nb_images": 30,
             "total_nb_images": 30,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFiC 03"
+            "fullname": "Regional Conventions / NASFiC / NASFiC 03 (1985) - Austin, TX"
           },
           {
             "id": 296,
-            "name": "NASFiC 04",
+            "name": "NASFiC 04 (1987) - Phoenix, AZ",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFiC 04"
+            "fullname": "Regional Conventions / NASFiC / NASFiC 04 (1987) - Phoenix, AZ"
           },
           {
             "id": 297,
-            "name": "NASFiC 08",
+            "name": "NASFiC 08 (2005) - Seattle, WA",
             "nb_images": 22,
             "total_nb_images": 22,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFiC 08"
+            "fullname": "Regional Conventions / NASFiC / NASFiC 08 (2005) - Seattle, WA"
           },
           {
             "id": 298,
-            "name": "NASFiC 10",
-            "nb_images": 11,
-            "total_nb_images": 11,
+            "name": "NASFiC 12 (2017) - San Juan, PR",
+            "nb_images": 14,
+            "total_nb_images": 14,
             "children": [],
-            "fullname": "Regional Conventions / NASFiC / NASFiC 10"
+            "fullname": "Regional Conventions / NASFiC / NASFiC 12 (2017) - San Juan, PR"
           }
         ],
         "fullname": "Regional Conventions / NASFiC"
@@ -2376,6 +2657,23 @@
         "fullname": "Regional Conventions / Philcon"
       },
       {
+        "id": 672,
+        "name": "Potlatch",
+        "nb_images": 0,
+        "total_nb_images": 9,
+        "children": [
+          {
+            "id": 673,
+            "name": "Potlatch 6 (1997)",
+            "nb_images": 9,
+            "total_nb_images": 9,
+            "children": [],
+            "fullname": "Regional Conventions / Potlatch / Potlatch 6 (1997)"
+          }
+        ],
+        "fullname": "Regional Conventions / Potlatch"
+      },
+      {
         "id": 325,
         "name": "ReaderCon",
         "nb_images": 0,
@@ -2526,104 +2824,136 @@
       {
         "id": 338,
         "name": "SmofCon",
-        "nb_images": 7,
-        "total_nb_images": 107,
+        "nb_images": 0,
+        "total_nb_images": 206,
         "children": [
           {
             "id": 339,
-            "name": "SmofCon 01",
+            "name": "SmofCon 01 (1984, Arlington)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 01"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 01 (1984, Arlington)"
           },
           {
             "id": 340,
-            "name": "SmofCon 07",
+            "name": "SmofCon 07 (1990, Ft. Lauderdale)",
             "nb_images": 5,
             "total_nb_images": 5,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 07"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 07 (1990, Ft. Lauderdale)"
           },
           {
             "id": 341,
-            "name": "SmofCon 08",
+            "name": "Smofcon 08 (1991, Portland)",
             "nb_images": 11,
             "total_nb_images": 11,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 08"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 08 (1991, Portland)"
           },
           {
             "id": 342,
-            "name": "SmofCon 09",
+            "name": "Smofcon 09 (1992, New Orleans)",
             "nb_images": 20,
             "total_nb_images": 20,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 09"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 09 (1992, New Orleans)"
           },
           {
             "id": 343,
-            "name": "SmofCon 10",
+            "name": "Smofcon 10 (1993, Jersey)",
             "nb_images": 4,
             "total_nb_images": 4,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 10"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 10 (1993, Jersey)"
           },
           {
             "id": 344,
-            "name": "SmofCon 11",
+            "name": "Smofcon 11 (1993, Lexington)",
             "nb_images": 19,
             "total_nb_images": 19,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 11"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 11 (1993, Lexington)"
           },
           {
             "id": 345,
-            "name": "SmofCon 15",
+            "name": "Smofcon 15 (1997, Boston)",
             "nb_images": 2,
             "total_nb_images": 2,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 15"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 15 (1997, Boston)"
           },
           {
             "id": 346,
-            "name": "SmofCon 16",
+            "name": "SmofCon 16 (1998, Colorado Springs)",
             "nb_images": 10,
             "total_nb_images": 10,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 16"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 16 (1998, Colorado Springs)"
           },
           {
             "id": 347,
-            "name": "SmofCon 17",
+            "name": "SmofCon 17 (1999, New Orleans)",
             "nb_images": 1,
             "total_nb_images": 1,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 17"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 17 (1999, New Orleans)"
+          },
+          {
+            "id": 677,
+            "name": "Smofcon 20 (2002, Dan Diego)",
+            "nb_images": 8,
+            "total_nb_images": 8,
+            "children": [],
+            "fullname": "Regional Conventions / SmofCon / Smofcon 20 (2002, Dan Diego)"
+          },
+          {
+            "id": 708,
+            "name": "Smofcon 24 (2006, Kansas City)",
+            "nb_images": 19,
+            "total_nb_images": 19,
+            "children": [],
+            "fullname": "Regional Conventions / SmofCon / Smofcon 24 (2006, Kansas City)"
+          },
+          {
+            "id": 703,
+            "name": "Smofcon 25 (2007, Boston)",
+            "nb_images": 50,
+            "total_nb_images": 50,
+            "children": [],
+            "fullname": "Regional Conventions / SmofCon / Smofcon 25 (2007, Boston)"
           },
           {
             "id": 348,
-            "name": "SmofCon 26",
+            "name": "SmofCon 26 (2008, Columbus)",
             "nb_images": 11,
             "total_nb_images": 11,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 26"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 26 (2008, Columbus)"
+          },
+          {
+            "id": 675,
+            "name": "Smofcon 27 (2009, Austin)",
+            "nb_images": 21,
+            "total_nb_images": 21,
+            "children": [],
+            "fullname": "Regional Conventions / SmofCon / Smofcon 27 (2009, Austin)"
           },
           {
             "id": 669,
-            "name": "Smofcon 29 (Amsterdam)",
-            "nb_images": 0,
-            "total_nb_images": 0,
+            "name": "Smofcon 29 (2011, Amsterdam)",
+            "nb_images": 8,
+            "total_nb_images": 8,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / Smofcon 29 (Amsterdam)"
+            "fullname": "Regional Conventions / SmofCon / Smofcon 29 (2011, Amsterdam)"
           },
           {
             "id": 349,
-            "name": "SmofCon 34",
+            "name": "SmofCon 34 (2016, Chicago)",
             "nb_images": 16,
             "total_nb_images": 16,
             "children": [],
-            "fullname": "Regional Conventions / SmofCon / SmofCon 34"
+            "fullname": "Regional Conventions / SmofCon / SmofCon 34 (2016, Chicago)"
           }
         ],
         "fullname": "Regional Conventions / SmofCon"
@@ -3111,7 +3441,7 @@
         "id": 398,
         "name": "Windycon",
         "nb_images": 0,
-        "total_nb_images": 5,
+        "total_nb_images": 56,
         "children": [
           {
             "id": 399,
@@ -3136,6 +3466,14 @@
             "total_nb_images": 1,
             "children": [],
             "fullname": "Regional Conventions / Windycon / Windycon 06 - 1979"
+          },
+          {
+            "id": 709,
+            "name": "Windycon 33 (2006)",
+            "nb_images": 51,
+            "total_nb_images": 51,
+            "children": [],
+            "fullname": "Regional Conventions / Windycon / Windycon 33 (2006)"
           }
         ],
         "fullname": "Regional Conventions / Windycon"
@@ -3204,7 +3542,7 @@
     "id": 404,
     "name": "Worldcons",
     "nb_images": 0,
-    "total_nb_images": 5892,
+    "total_nb_images": 7025,
     "children": [
       {
         "id": 405,
@@ -3241,8 +3579,8 @@
       {
         "id": 513,
         "name": "Aussiecon 4 (2010)",
-        "nb_images": 50,
-        "total_nb_images": 50,
+        "nb_images": 98,
+        "total_nb_images": 98,
         "children": [],
         "fullname": "Worldcons / Aussiecon 4 (2010)"
       },
@@ -3256,17 +3594,17 @@
       },
       {
         "id": 408,
-        "name": "BucCONeer (1998)",
-        "nb_images": 43,
-        "total_nb_images": 200,
+        "name": "Bucconeer (1998)",
+        "nb_images": 56,
+        "total_nb_images": 217,
         "children": [
           {
             "id": 624,
             "name": "Boston in Orlando in 2001 Bid",
-            "nb_images": 48,
-            "total_nb_images": 48,
+            "nb_images": 52,
+            "total_nb_images": 52,
             "children": [],
-            "fullname": "Worldcons / BucCONeer (1998) / Boston in Orlando in 2001 Bid"
+            "fullname": "Worldcons / Bucconeer (1998) / Boston in Orlando in 2001 Bid"
           },
           {
             "id": 625,
@@ -3274,10 +3612,10 @@
             "nb_images": 109,
             "total_nb_images": 109,
             "children": [],
-            "fullname": "Worldcons / BucCONeer (1998) / Masquerade"
+            "fullname": "Worldcons / Bucconeer (1998) / Masquerade"
           }
         ],
-        "fullname": "Worldcons / BucCONeer (1998)"
+        "fullname": "Worldcons / Bucconeer (1998)"
       },
       {
         "id": 518,
@@ -3372,8 +3710,8 @@
       {
         "id": 410,
         "name": "Cinvention (1949)",
-        "nb_images": 14,
-        "total_nb_images": 14,
+        "nb_images": 16,
+        "total_nb_images": 16,
         "children": [],
         "fullname": "Worldcons / Cinvention (1949)"
       },
@@ -3412,17 +3750,35 @@
       {
         "id": 415,
         "name": "ConFrancisco (1993)",
-        "nb_images": 67,
+        "nb_images": 19,
         "total_nb_images": 67,
-        "children": [],
+        "children": [
+          {
+            "id": 682,
+            "name": "Masquerade",
+            "nb_images": 48,
+            "total_nb_images": 48,
+            "children": [],
+            "fullname": "Worldcons / ConFrancisco (1993) / Masquerade"
+          }
+        ],
         "fullname": "Worldcons / ConFrancisco (1993)"
       },
       {
         "id": 416,
         "name": "ConJose (2002)",
         "nb_images": 191,
-        "total_nb_images": 191,
-        "children": [],
+        "total_nb_images": 226,
+        "children": [
+          {
+            "id": 730,
+            "name": "Planning meetings and pre-con",
+            "nb_images": 35,
+            "total_nb_images": 35,
+            "children": [],
+            "fullname": "Worldcons / ConJose (2002) / Planning meetings and pre-con"
+          }
+        ],
         "fullname": "Worldcons / ConJose (2002)"
       },
       {
@@ -3477,9 +3833,50 @@
       {
         "id": 517,
         "name": "Denvention 3 (2008)",
-        "nb_images": 52,
-        "total_nb_images": 52,
-        "children": [],
+        "nb_images": 71,
+        "total_nb_images": 321,
+        "children": [
+          {
+            "id": 693,
+            "name": "Exhibits",
+            "nb_images": 49,
+            "total_nb_images": 49,
+            "children": [],
+            "fullname": "Worldcons / Denvention 3 (2008) / Exhibits"
+          },
+          {
+            "id": 694,
+            "name": "Former Worldcon Chairmen's Party",
+            "nb_images": 57,
+            "total_nb_images": 57,
+            "children": [],
+            "fullname": "Worldcons / Denvention 3 (2008) / Former Worldcon Chairmen's Party"
+          },
+          {
+            "id": 695,
+            "name": "Hugos",
+            "nb_images": 90,
+            "total_nb_images": 90,
+            "children": [],
+            "fullname": "Worldcons / Denvention 3 (2008) / Hugos"
+          },
+          {
+            "id": 696,
+            "name": "Registration",
+            "nb_images": 16,
+            "total_nb_images": 16,
+            "children": [],
+            "fullname": "Worldcons / Denvention 3 (2008) / Registration"
+          },
+          {
+            "id": 697,
+            "name": "Setup",
+            "nb_images": 38,
+            "total_nb_images": 38,
+            "children": [],
+            "fullname": "Worldcons / Denvention 3 (2008) / Setup"
+          }
+        ],
         "fullname": "Worldcons / Denvention 3 (2008)"
       },
       {
@@ -3501,8 +3898,8 @@
       {
         "id": 537,
         "name": "Discon 3 (2021)",
-        "nb_images": 59,
-        "total_nb_images": 59,
+        "nb_images": 113,
+        "total_nb_images": 113,
         "children": [],
         "fullname": "Worldcons / Discon 3 (2021)"
       },
@@ -3525,8 +3922,8 @@
       {
         "id": 451,
         "name": "Helsinki (2017)",
-        "nb_images": 123,
-        "total_nb_images": 123,
+        "nb_images": 129,
+        "total_nb_images": 129,
         "children": [],
         "fullname": "Worldcons / Helsinki (2017)"
       },
@@ -3541,8 +3938,8 @@
       {
         "id": 424,
         "name": "Interaction (2005)",
-        "nb_images": 83,
-        "total_nb_images": 83,
+        "nb_images": 228,
+        "total_nb_images": 228,
         "children": [],
         "fullname": "Worldcons / Interaction (2005)"
       },
@@ -3581,19 +3978,52 @@
       {
         "id": 549,
         "name": "LAcon 4 (2006)",
-        "nb_images": 277,
-        "total_nb_images": 277,
+        "nb_images": 314,
+        "total_nb_images": 513,
         "children": [
           {
-            "id": 550,
-            "name": "LAcon 5",
-            "nb_images": 0,
-            "total_nb_images": 0,
+            "id": 714,
+            "name": "Howard De Vore exhibit",
+            "nb_images": 16,
+            "total_nb_images": 16,
             "children": [],
-            "fullname": "Worldcons / LAcon 4 (2006) / LAcon 5"
+            "fullname": "Worldcons / LAcon 4 (2006) / Howard De Vore exhibit"
+          },
+          {
+            "id": 716,
+            "name": "Masquerade",
+            "nb_images": 64,
+            "total_nb_images": 64,
+            "children": [],
+            "fullname": "Worldcons / LAcon 4 (2006) / Masquerade"
+          },
+          {
+            "id": 713,
+            "name": "Wall of History",
+            "nb_images": 34,
+            "total_nb_images": 119,
+            "children": [
+              {
+                "id": 715,
+                "name": "Final Record",
+                "nb_images": 85,
+                "total_nb_images": 85,
+                "children": [],
+                "fullname": "Worldcons / LAcon 4 (2006) / Wall of History / Final Record"
+              }
+            ],
+            "fullname": "Worldcons / LAcon 4 (2006) / Wall of History"
           }
         ],
         "fullname": "Worldcons / LAcon 4 (2006)"
+      },
+      {
+        "id": 550,
+        "name": "LAcon 5 (2026)",
+        "nb_images": 0,
+        "total_nb_images": 0,
+        "children": [],
+        "fullname": "Worldcons / LAcon 5 (2026)"
       },
       {
         "id": 551,
@@ -3638,9 +4068,42 @@
       {
         "id": 429,
         "name": "MagiCon (1992)",
-        "nb_images": 271,
-        "total_nb_images": 271,
-        "children": [],
+        "nb_images": 171,
+        "total_nb_images": 276,
+        "children": [
+          {
+            "id": 678,
+            "name": "Golf Course",
+            "nb_images": 61,
+            "total_nb_images": 61,
+            "children": [],
+            "fullname": "Worldcons / MagiCon (1992) / Golf Course"
+          },
+          {
+            "id": 681,
+            "name": "Hugos",
+            "nb_images": 15,
+            "total_nb_images": 15,
+            "children": [],
+            "fullname": "Worldcons / MagiCon (1992) / Hugos"
+          },
+          {
+            "id": 680,
+            "name": "Masquerade",
+            "nb_images": 20,
+            "total_nb_images": 20,
+            "children": [],
+            "fullname": "Worldcons / MagiCon (1992) / Masquerade"
+          },
+          {
+            "id": 679,
+            "name": "Pre-Con Tours",
+            "nb_images": 9,
+            "total_nb_images": 9,
+            "children": [],
+            "fullname": "Worldcons / MagiCon (1992) / Pre-Con Tours"
+          }
+        ],
         "fullname": "Worldcons / MagiCon (1992)"
       },
       {
@@ -3711,17 +4174,75 @@
       {
         "id": 450,
         "name": "Noreascon 3 (1989)",
-        "nb_images": 156,
-        "total_nb_images": 156,
-        "children": [],
+        "nb_images": 104,
+        "total_nb_images": 158,
+        "children": [
+          {
+            "id": 676,
+            "name": "Masquerade",
+            "nb_images": 54,
+            "total_nb_images": 54,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 3 (1989) / Masquerade"
+          }
+        ],
         "fullname": "Worldcons / Noreascon 3 (1989)"
       },
       {
         "id": 447,
         "name": "Noreascon 4 (2004)",
-        "nb_images": 156,
-        "total_nb_images": 156,
-        "children": [],
+        "nb_images": 168,
+        "total_nb_images": 263,
+        "children": [
+          {
+            "id": 727,
+            "name": "Bidding and pre-con parties",
+            "nb_images": 5,
+            "total_nb_images": 5,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Bidding and pre-con parties"
+          },
+          {
+            "id": 685,
+            "name": "Hugos",
+            "nb_images": 25,
+            "total_nb_images": 25,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Hugos"
+          },
+          {
+            "id": 684,
+            "name": "Masquerade",
+            "nb_images": 47,
+            "total_nb_images": 47,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Masquerade"
+          },
+          {
+            "id": 683,
+            "name": "Planning Meetings",
+            "nb_images": 10,
+            "total_nb_images": 10,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Planning Meetings"
+          },
+          {
+            "id": 726,
+            "name": "Post-con",
+            "nb_images": 0,
+            "total_nb_images": 0,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Post-con"
+          },
+          {
+            "id": 721,
+            "name": "Pratchett Exhibit",
+            "nb_images": 8,
+            "total_nb_images": 8,
+            "children": [],
+            "fullname": "Worldcons / Noreascon 4 (2004) / Pratchett Exhibit"
+          }
+        ],
         "fullname": "Worldcons / Noreascon 4 (2004)"
       },
       {
@@ -3743,8 +4264,8 @@
       {
         "id": 560,
         "name": "NYCon 2 (1956)",
-        "nb_images": 18,
-        "total_nb_images": 18,
+        "nb_images": 22,
+        "total_nb_images": 22,
         "children": [],
         "fullname": "Worldcons / NYCon 2 (1956)"
       },
@@ -3759,8 +4280,8 @@
       {
         "id": 565,
         "name": "Pacificon 1 (1946)",
-        "nb_images": 9,
-        "total_nb_images": 9,
+        "nb_images": 19,
+        "total_nb_images": 19,
         "children": [],
         "fullname": "Worldcons / Pacificon 1 (1946)"
       },
@@ -3791,8 +4312,8 @@
       {
         "id": 570,
         "name": "Philcon 3 (2001)",
-        "nb_images": 111,
-        "total_nb_images": 111,
+        "nb_images": 115,
+        "total_nb_images": 115,
         "children": [],
         "fullname": "Worldcons / Philcon 3 (2001)"
       },
@@ -3807,16 +4328,25 @@
       {
         "id": 438,
         "name": "Renovation (2011)",
-        "nb_images": 117,
-        "total_nb_images": 117,
-        "children": [],
+        "nb_images": 93,
+        "total_nb_images": 200,
+        "children": [
+          {
+            "id": 670,
+            "name": "People",
+            "nb_images": 107,
+            "total_nb_images": 107,
+            "children": [],
+            "fullname": "Worldcons / Renovation (2011) / People"
+          }
+        ],
         "fullname": "Worldcons / Renovation (2011)"
       },
       {
         "id": 440,
         "name": "Sasquan (2015)",
-        "nb_images": 74,
-        "total_nb_images": 109,
+        "nb_images": 73,
+        "total_nb_images": 108,
         "children": [
           {
             "id": 660,
@@ -3848,8 +4378,8 @@
       {
         "id": 584,
         "name": "Seacon 79 (1979)",
-        "nb_images": 87,
-        "total_nb_images": 87,
+        "nb_images": 88,
+        "total_nb_images": 88,
         "children": [],
         "fullname": "Worldcons / Seacon 79 (1979)"
       },
@@ -3896,8 +4426,8 @@
       {
         "id": 585,
         "name": "Torcon 1 (1948)",
-        "nb_images": 0,
-        "total_nb_images": 0,
+        "nb_images": 2,
+        "total_nb_images": 2,
         "children": [],
         "fullname": "Worldcons / Torcon 1 (1948)"
       },
@@ -3912,9 +4442,34 @@
       {
         "id": 588,
         "name": "Torcon 3 (2003)",
-        "nb_images": 237,
-        "total_nb_images": 237,
-        "children": [],
+        "nb_images": 111,
+        "total_nb_images": 341,
+        "children": [
+          {
+            "id": 723,
+            "name": "FWC Photos",
+            "nb_images": 7,
+            "total_nb_images": 7,
+            "children": [],
+            "fullname": "Worldcons / Torcon 3 (2003) / FWC Photos"
+          },
+          {
+            "id": 686,
+            "name": "History of Fandom Exhibit",
+            "nb_images": 64,
+            "total_nb_images": 64,
+            "children": [],
+            "fullname": "Worldcons / Torcon 3 (2003) / History of Fandom Exhibit"
+          },
+          {
+            "id": 724,
+            "name": "Masquerade",
+            "nb_images": 159,
+            "total_nb_images": 159,
+            "children": [],
+            "fullname": "Worldcons / Torcon 3 (2003) / Masquerade"
+          }
+        ],
         "fullname": "Worldcons / Torcon 3 (2003)"
       },
       {
@@ -3935,5 +4490,13 @@
       }
     ],
     "fullname": "Worldcons"
+  },
+  {
+    "id": 688,
+    "name": "ZZ Perry",
+    "nb_images": 0,
+    "total_nb_images": 0,
+    "children": [],
+    "fullname": "ZZ Perry"
   }
 ]
