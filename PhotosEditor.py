@@ -102,6 +102,17 @@ def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
 
 
+def _is_sensible_date(date_str: str) -> bool:
+    """True if date_str has a 4-digit year between 1927 and the current year inclusive.
+    Handles both EXIF format (YYYY:MM:DD ...) and IPTC format (YYYYMMDD).
+    """
+    import datetime as _dt
+    try:
+        return 1926 < int(date_str[:4]) <= _dt.date.today().year
+    except (ValueError, IndexError, TypeError):
+        return False
+
+
 def _load_state() -> dict:
     try:
         if STATE_FILE.exists():
@@ -2938,6 +2949,19 @@ class PhotosEditor:
         except Exception as e:
             logger.debug(f"Could not read IPTC: {e}")
 
+        # Pre-populate _exif_data with DateTimeOriginal (0x9003) — the camera standard
+        # for "when taken".  PE has no separate _load_exif call, so we read it here.
+        try:
+            raw_exif = pil_image._getexif() if hasattr(pil_image, '_getexif') else None
+            if raw_exif:
+                dto = raw_exif.get(36867)  # 36867 = DateTimeOriginal (0x9003)
+                if dto:
+                    if isinstance(dto, bytes):
+                        dto = dto.decode('utf-8', errors='replace')
+                    self._exif_data['Date Created'] = str(dto).strip()
+        except Exception:
+            pass
+
         for link in self._field_links:
             raw = iptc.get(link['iptc_tag'], b'')
             if isinstance(raw, list):
@@ -2947,7 +2971,17 @@ class PhotosEditor:
             else:
                 value = bytes(raw).decode('utf-8', errors='replace').strip() if raw else ''
 
-            if not value and link['exif_key'] is not None:
+            # For the photo date: prefer DateTimeOriginal (camera standard for "when taken");
+            # use IPTC only as a fallback when EXIF is absent and the year is plausible.
+            # For all other fields: keep original IPTC-first, EXIF-fallback behaviour.
+            if link['custom_key'] == 'date_of_photo':
+                exif_date = (self._exif_data.get(link['exif_key'], '')
+                             if link['exif_key'] else '')
+                if exif_date:
+                    value = exif_date
+                elif not _is_sensible_date(value):
+                    value = ''
+            elif not value and link['exif_key'] is not None:
                 value = self._exif_data.get(link['exif_key'], '')
 
             if link['exif_key'] is not None:
