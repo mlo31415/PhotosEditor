@@ -74,6 +74,10 @@ except ImportError as _e:
     _mb.showerror("Startup Error",
                   f"Cannot import AlbumHierarchy.\n\n{_hint}\n\nDetail: {_e}")
     sys.exit(1)
+
+from CredentialStore import CredentialStore, CredentialError
+_store = CredentialStore(_SCRIPT_DIR, "PhotosEditor Params.json")
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -488,6 +492,12 @@ class PhotosEditor:
         self.root.title("FANAC.org Photos Editor")
         self.root.geometry("1400x820")
         self.root.minsize(800, 500)
+
+        # Title-bar/taskbar icon (bundled into the exe via the .spec); harmless no-op if missing or bad
+        try:
+            self.root.iconbitmap(str(Path(getattr(sys, "_MEIPASS", _SCRIPT_DIR)) / "PhotosEditor.ico"))
+        except Exception:
+            pass
 
         # ── persistent state ────────────────────────────────────────────────
         self._state = _load_state()
@@ -1133,13 +1143,14 @@ class PhotosEditor:
 
         def worker():
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get(
                         "rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 n = AlbumHierarchy._fetch_and_save_hierarchy(
                     client, lambda msg: self.root.after(0, lambda m=msg: self.set_status(m)))
                 client.logout()
@@ -1422,12 +1433,13 @@ class PhotosEditor:
                              count_var: tk.StringVar,
                              on_total, on_progress, on_done, gen: int):
         try:
-            params = AlbumHierarchy.load_params()
+            creds  = _store.load_credentials()
+            params = _store.load_op_params()
             client = AlbumHierarchy.PiwigoClient(
-                params["url"], params["username"], params["password"],
-                verify_ssl=params.get("verify_ssl", True),
+                creds["url"], creds["username"], creds["password"],
+                verify_ssl=creds.get("verify_ssl", True),
                 rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-            client.login(params["username"], params["password"])
+            client.login(creds["username"], creds["password"])
             images = client.get_album_images(album_id)
             client.logout()
 
@@ -1439,7 +1451,7 @@ class PhotosEditor:
             self.root.after(0, lambda: count_var.set(f"{n} photo{'s' if n != 1 else ''}"))
             on_total(n)
 
-            verify = params.get("verify_ssl", True)
+            verify = creds.get("verify_ssl", True)
             for idx, img_dict in enumerate(images):
                 if gen != panel.load_gen:
                     return
@@ -1802,12 +1814,13 @@ class PhotosEditor:
             n_ok      = 0
             undo_items = []   # {image_id, name, original_cats}
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
 
                 for i, d in enumerate(batch):
                     image_id = d.get("id")
@@ -2105,13 +2118,14 @@ class PhotosEditor:
 
         def worker():
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get(
                         "rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 client.move_album(album_id, dst_id)
                 AlbumHierarchy._fetch_and_save_hierarchy(client, lambda _: None)
                 client.logout()
@@ -2154,12 +2168,13 @@ class PhotosEditor:
             errors = []
             n_ok   = 0
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 for i, item in enumerate(items):
                     set_stage(f"Restoring: {item['name']}")
                     try:
@@ -2219,12 +2234,13 @@ class PhotosEditor:
         def worker():
             errors = []
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 for d in batch:
                     iid  = d.get("id")
                     name = d.get("file") or d.get("name") or str(iid)
@@ -2264,12 +2280,13 @@ class PhotosEditor:
 
         def worker():
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
-                    verify_ssl=params.get("verify_ssl", True),
+                    creds["url"], creds["username"], creds["password"],
+                    verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 info = client.get_image_info(image_id)
                 current_cats = [int(c["id"]) for c in info.get("categories", [])]
                 new_cats = [c for c in current_cats if c != album_id]
@@ -2335,17 +2352,18 @@ class PhotosEditor:
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
             return
         try:
-            params = AlbumHierarchy.load_params()
-            verify = params.get("verify_ssl", True)
+            creds  = _store.load_credentials()
+            params = _store.load_op_params()
+            verify = creds.get("verify_ssl", True)
 
             # Fetch full image metadata (includes author, tags, etc.)
             rich_dict = dict(img_dict)
             try:
                 client = AlbumHierarchy.PiwigoClient(
-                    params["url"], params["username"], params["password"],
+                    creds["url"], creds["username"], creds["password"],
                     verify_ssl=verify,
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
-                client.login(params["username"], params["password"])
+                client.login(creds["username"], creds["password"])
                 info = client.get_image_info(img_dict["id"])
                 client.logout()
                 rich_dict.update(info)
@@ -2467,7 +2485,8 @@ class PhotosEditor:
         def worker():
             temp_path = None
             try:
-                params = AlbumHierarchy.load_params()
+                creds  = _store.load_credentials()
+                params = _store.load_op_params()
 
                 # Save edited PIL image to a temp JPEG
                 set_stage("Saving edited image…")
@@ -2489,11 +2508,11 @@ class PhotosEditor:
                 img.save(temp_path, format='JPEG', quality=92)
 
                 client = AlbumHierarchy.PiwigoClient(
-                    params['url'], params['username'], params['password'],
-                    verify_ssl=params.get('verify_ssl', True),
+                    creds['url'], creds['username'], creds['password'],
+                    verify_ssl=creds.get('verify_ssl', True),
                     rate_limit_calls_per_second=params.get('rate_limit_calls_per_second', 2.0))
                 set_stage("Logging in…")
-                client.login(params['username'], params['password'])
+                client.login(creds['username'], creds['password'])
                 set_stage(f"Uploading {fname}…")
                 result = client.upload_image(
                     temp_path, album_id,
