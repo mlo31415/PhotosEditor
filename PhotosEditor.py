@@ -137,6 +137,38 @@ def _save_state(state: dict) -> None:
         logger.warning(f"Could not save state: {e}")
 
 
+def _virtual_screen_bounds(win) -> tuple[int, int, int, int]:
+    """(x, y, width, height) of the rectangle spanning all connected monitors. On Windows this is the true
+    multi-monitor virtual desktop; elsewhere it falls back to Tk's primary-screen size."""
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            # SM_XVIRTUALSCREEN=76, SM_YVIRTUALSCREEN=77, SM_CXVIRTUALSCREEN=78, SM_CYVIRTUALSCREEN=79
+            return (u.GetSystemMetrics(76), u.GetSystemMetrics(77),
+                    u.GetSystemMetrics(78), u.GetSystemMetrics(79))
+        except Exception:
+            pass
+    return (0, 0, win.winfo_screenwidth(), win.winfo_screenheight())
+
+
+def _geometry_on_screen(win, geo: str) -> str:
+    """Given a saved "WxH+X+Y", return a geometry guaranteed to land on a currently-connected monitor: if the
+    window's title-bar corner is outside the virtual desktop (e.g. it was last used on a monitor that is no
+    longer attached), clamp it back onto a real display. A genuine multi-monitor position is left untouched."""
+    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", (geo or "").strip())
+    if not m:
+        return geo
+    w, h, x, y = (int(v) for v in m.groups())
+    vx, vy, vw, vh = _virtual_screen_bounds(win)
+    margin = 60      # keep at least this much of the title bar grabbable inside the desktop
+    if vx <= x <= vx + vw - margin and vy <= y <= vy + vh - margin:
+        return geo   # top-left is on a visible monitor -> leave it alone
+    nx = max(vx, min(x, vx + vw - w))
+    ny = max(vy, min(y, vy + vh - h))
+    return f"{w}x{h}+{nx}+{ny}"
+
+
 class _Tooltip:
     """Hover tooltip that treats multiple widgets as one hover region.
 
@@ -684,7 +716,7 @@ class PhotosEditor:
             saved_geo = self._state.get("editor_geometry", "")
             if saved_geo:
                 try:
-                    self._editor_dlg.geometry(saved_geo)
+                    self._editor_dlg.geometry(_geometry_on_screen(self._editor_dlg, saved_geo))
                 except Exception:
                     saved_geo = ""
             if not saved_geo:
@@ -955,7 +987,7 @@ class PhotosEditor:
         geo = self._state.get("geometry", "")
         if geo:
             try:
-                self.root.geometry(geo)
+                self.root.geometry(_geometry_on_screen(self.root, geo))   # never restore onto a monitor that's gone
             except Exception:
                 pass
         sash_frac = self._state.get("sash_frac", None)
