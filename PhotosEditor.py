@@ -426,6 +426,7 @@ class ThumbnailPanel:
             set_status            = set_status,
             select_delay_ms       = 750,
             on_selection_changing = _cancel_current_load,
+            selectmode            = 'extended',   # multi-select for Download Album
         )
         self.atw.frame.pack(fill="both", expand=True)
 
@@ -760,8 +761,12 @@ class PhotosEditor:
             lambda aid, fn, x, y: self._on_album_drag_start(tgt, aid, fn, x, y))
 
         # Add "Download Album" to the RMB menu of both album trees.
-        src.atw._extend_rmb_menu = self._extend_album_tree_menu
-        tgt.atw._extend_rmb_menu = self._extend_album_tree_menu
+        src.atw._extend_rmb_menu = (
+            lambda menu, aid, node, atw=src.atw:
+                self._extend_album_tree_menu(atw, menu, aid, node))
+        tgt.atw._extend_rmb_menu = (
+            lambda menu, aid, node, atw=tgt.atw:
+                self._extend_album_tree_menu(atw, menu, aid, node))
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -1608,59 +1613,104 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     _DL_DEFAULT_SECS_PER_PHOTO = 10.0   # starting estimate until real timings exist
 
-    def _extend_album_tree_menu(self, menu: tk.Menu, album_id: int, node: dict):
+    def _extend_album_tree_menu(self, atw, menu: tk.Menu, album_id: int, node: dict):
+        # If the clicked row is part of a multi-selection, offer to download all
+        # the selected albums; otherwise just the clicked one.
+        sel = atw.tree.selection()
+        if str(album_id) in sel and len(sel) > 1:
+            nodes = [atw._node_by_iid[s] for s in sel if s in atw._node_by_iid]
+            label = f"Download {len(nodes)} Albums"
+        else:
+            nodes = [node]
+            label = "Download Album"
         menu.add_separator()
         menu.add_command(
-            label="Download Album",
-            command=lambda: self.root.after(50, lambda: self._download_album(node)))
+            label=label,
+            command=lambda: self.root.after(50, lambda: self._download_album(nodes)))
 
-    def _download_album(self, node: dict):
+    def _download_album(self, nodes: list[dict]):
         """RMB 'Download Album': confirm scope, pick destination, estimate, confirm, go."""
         include_subs = False
-        if node.get("children"):
+        if any(n.get("children") for n in nodes):
+            what = (f'"{nodes[0]["name"]}" has sub-albums.' if len(nodes) == 1 else
+                    "One or more of the selected albums have sub-albums.")
             ans = messagebox.askyesnocancel(
                 "Download Album",
-                f'"{node["name"]}" has sub-albums.\n\nDownload the sub-albums as well?',
+                f"{what}\n\nDownload the sub-albums as well?",
                 parent=self.root)
             if ans is None:
                 return
             include_subs = ans
 
+        if include_subs and len(nodes) > 1:
+            # Drop albums nested inside another selected album's subtree --
+            # they will be downloaded as part of that album anyway.
+            def ids_under(n: dict) -> set:
+                out = set()
+                for ch in n.get("children", []):
+                    out.add(ch["id"])
+                    out |= ids_under(ch)
+                return out
+            covered: set = set()
+            for n in nodes:
+                covered |= ids_under(n)
+            nodes = [n for n in nodes if n["id"] not in covered]
+
         dest = filedialog.askdirectory(
             parent=self.root, mustexist=True,
-            title="Select the directory to download the album into")
+            title="Select the directory to download the album"
+                  + ("s" if len(nodes) > 1 else "") + " into")
         if not dest:
             return
-        # Mirror the album's position in the hierarchy: album A inside album B
-        # downloads into <dest>/B/A (fullname is the " / "-separated breadcrumb).
-        dest_root = Path(dest)
-        for part in node.get("fullname", node["name"]).split(" / "):
-            dest_root = dest_root / _sanitize_filename(part)
+        dest_dir = Path(dest)
 
-        n_photos = node.get("total_nb_images" if include_subs else "nb_images", 0)
+        # Mirror each album's position in the hierarchy: album A inside album B
+        # downloads into <dest>/B/A (fullname is the " / "-separated breadcrumb).
+        def node_root(n: dict) -> Path:
+            p = dest_dir
+            for part in n.get("fullname", n["name"]).split(" / "):
+                p = p / _sanitize_filename(part)
+            return p
+        roots = [(n, node_root(n)) for n in nodes]
+        dest_display = roots[0][1] if len(nodes) == 1 else dest_dir
+
+        count_key = "total_nb_images" if include_subs else "nb_images"
+        n_photos  = sum(n.get(count_key, 0) for n in nodes)
         if n_photos == 0:
-            messagebox.showinfo(
-                "Download Album",
-                f'"{node["name"]}" contains no photos.', parent=self.root)
+            what = (f'"{nodes[0]["name"]}" contains' if len(nodes) == 1 else
+                    "The selected albums contain")
+            messagebox.showinfo("Download Album",
+                                f"{what} no photos.", parent=self.root)
             return
+
+        names = [n.get("fullname", n["name"]) for n in nodes]
+        if len(names) == 1:
+            src_txt = f"Source album:  {names[0]}"
+        else:
+            shown = names[:6] + ([f"…and {len(names) - 6} more"] if len(names) > 6 else [])
+            src_txt = "Source albums:\n  " + "\n  ".join(shown)
 
         times = self._state.get("download_secs_per_photo") or []
         secs_per = sum(times) / len(times) if times else self._DL_DEFAULT_SECS_PER_PHOTO
         subs_note = " (including sub-albums)" if include_subs else ""
         if not messagebox.askyesno(
                 "Begin Download?",
-                f"Source album:  {node.get('fullname', node['name'])}\n"
+                f"{src_txt}\n"
                 f"Photos:  {n_photos:,}{subs_note}\n"
                 f"Estimated time:  {_format_duration(secs_per * n_photos)}\n"
-                f"Destination:  {dest_root}\n\n"
+                f"Destination:  {dest_display}\n\n"
                 "Begin the download?",
                 parent=self.root):
             return
 
-        self._run_album_download(node, include_subs, dest_root)
+        self._run_album_download(roots, include_subs, dest_display)
 
-    def _run_album_download(self, node: dict, include_subs: bool, dest_root: Path):
-        """Progress dialog + background worker for an album download."""
+    def _run_album_download(self, roots: list[tuple[dict, Path]],
+                            include_subs: bool, dest_display: Path):
+        """Progress dialog + background worker for an album download.
+
+        roots holds (album_node, destination_dir) for each top-level album;
+        dest_display is the path shown in the completion dialog."""
         dlg = tk.Toplevel(self.root)
         dlg.title("Downloading Album")
         dlg.resizable(False, False)
@@ -1721,15 +1771,15 @@ class PhotosEditor:
                        + ", ".join(bits) + ".")
             self.set_status(summary)
             (messagebox.showwarning if errors else messagebox.showinfo)(
-                "Download Album", f"{summary}\n\nDestination:\n{dest_root}",
+                "Download Album", f"{summary}\n\nDestination:\n{dest_display}",
                 parent=self.root)
 
         threading.Thread(
             target=self._worker_download_album,
-            args=(node, include_subs, dest_root, cancel_evt, progress, finish),
+            args=(roots, include_subs, cancel_evt, progress, finish),
             daemon=True).start()
 
-    def _worker_download_album(self, node: dict, include_subs: bool, dest_root: Path,
+    def _worker_download_album(self, roots: list[tuple[dict, Path]], include_subs: bool,
                                cancel_evt: threading.Event, progress, finish):
         downloaded = skipped = errors = 0
         dl_secs = 0.0
@@ -1752,7 +1802,8 @@ class PhotosEditor:
                     if include_subs:
                         for ch in n.get("children", []):
                             walk(ch, dir_ / _sanitize_filename(ch["name"]))
-                walk(node, dest_root)
+                for nd, root_dir in roots:
+                    walk(nd, root_dir)
 
                 album_lists: list[tuple[Path, list]] = []
                 total = 0
