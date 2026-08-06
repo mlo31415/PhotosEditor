@@ -21,8 +21,10 @@ import threading
 import logging
 import warnings
 import atexit
+import time
+import xml.etree.ElementTree as ET
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -115,6 +117,67 @@ def _is_sensible_date(date_str: str) -> bool:
         return 1926 < int(date_str[:4]) <= _dt.date.today().year
     except (ValueError, IndexError, TypeError):
         return False
+
+
+def _sanitize_filename(name: str) -> str:
+    """Make a string safe as a Windows file/folder name."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name).strip().rstrip('. ')
+    return name or "unnamed"
+
+
+def _photo_filename(img_dict: dict) -> str:
+    """Filename for a downloaded photo: Piwigo display name (sanitized),
+    extension taken from the original file."""
+    orig = img_dict.get("file") or ""
+    ext = (Path(orig).suffix or
+           Path((img_dict.get("element_url") or "").split("?")[0]).suffix or ".jpg")
+    name = (img_dict.get("name") or "").strip() or Path(orig).stem or f"image_{img_dict.get('id')}"
+    return _sanitize_filename(name) + ext.lower()
+
+
+def _dict_to_xml(tag: str, value) -> "ET.Element":
+    """Recursively convert a dict/list/scalar into an XML element tree."""
+    # XML element names can't start with a digit or contain arbitrary punctuation
+    tag = re.sub(r'[^A-Za-z0-9_.-]', '_', str(tag)) or "item"
+    if tag[0].isdigit():
+        tag = "_" + tag
+    el = ET.Element(tag)
+    if isinstance(value, dict):
+        for k, v in value.items():
+            el.append(_dict_to_xml(k, v))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            el.append(_dict_to_xml("item", v))
+    elif value is not None:
+        el.text = str(value)
+    return el
+
+
+_XML_TOP_FIELDS  = ("id", "file", "date_creation", "name", "comment", "author")
+_XML_ITEM_FIELDS = ("name", "id", "url", "page_url")   # kept for each tag/category item
+
+
+def _write_photo_xml(path: Path, info: dict) -> None:
+    """Write the selected subset of Piwigo info about a photo as an XML file."""
+    data: dict = {k: info.get(k) for k in _XML_TOP_FIELDS}
+    for lst_key in ("tags", "categories"):
+        data[lst_key] = [{k: e.get(k) for k in _XML_ITEM_FIELDS if k in e}
+                         for e in (info.get(lst_key) or [])]
+    root_el = _dict_to_xml("photo", data)
+    tree = ET.ElementTree(root_el)
+    ET.indent(tree)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def _format_duration(secs: float) -> str:
+    secs = int(round(secs))
+    if secs < 60:
+        return f"{secs} second{'s' if secs != 1 else ''}"
+    mins, s = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins} minute{'s' if mins != 1 else ''}" + (f" {s} seconds" if s else "")
+    hours, m = divmod(mins, 60)
+    return f"{hours} hour{'s' if hours != 1 else ''}" + (f" {m} minutes" if m else "")
 
 
 def _load_state() -> dict:
@@ -695,6 +758,10 @@ class PhotosEditor:
             lambda aid, fn, x, y: self._on_album_drag_start(src, aid, fn, x, y))
         tgt.atw._on_album_drag_start = (
             lambda aid, fn, x, y: self._on_album_drag_start(tgt, aid, fn, x, y))
+
+        # Add "Download Album" to the RMB menu of both album trees.
+        src.atw._extend_rmb_menu = self._extend_album_tree_menu
+        tgt.atw._extend_rmb_menu = self._extend_album_tree_menu
 
         # ── status bar ───────────────────────────────────────────────────────
         status_bar = ttk.Frame(self.root, relief="sunken")
@@ -1535,6 +1602,218 @@ class PhotosEditor:
             self.root.after(0, _schedule)
         except Exception as e:
             logger.warning(f"Thumbnail {image_id} ({url}): {e}")
+
+    # -----------------------------------------------------------------------
+    # Download Album  (RMB menu on either album hierarchy tree)
+    # -----------------------------------------------------------------------
+    _DL_DEFAULT_SECS_PER_PHOTO = 10.0   # starting estimate until real timings exist
+
+    def _extend_album_tree_menu(self, menu: tk.Menu, album_id: int, node: dict):
+        menu.add_separator()
+        menu.add_command(
+            label="Download Album",
+            command=lambda: self.root.after(50, lambda: self._download_album(node)))
+
+    def _download_album(self, node: dict):
+        """RMB 'Download Album': confirm scope, pick destination, estimate, confirm, go."""
+        include_subs = False
+        if node.get("children"):
+            ans = messagebox.askyesnocancel(
+                "Download Album",
+                f'"{node["name"]}" has sub-albums.\n\nDownload the sub-albums as well?',
+                parent=self.root)
+            if ans is None:
+                return
+            include_subs = ans
+
+        dest = filedialog.askdirectory(
+            parent=self.root, mustexist=True,
+            title="Select the directory to download the album into")
+        if not dest:
+            return
+        dest_root = Path(dest) / _sanitize_filename(node["name"])
+
+        n_photos = node.get("total_nb_images" if include_subs else "nb_images", 0)
+        if n_photos == 0:
+            messagebox.showinfo(
+                "Download Album",
+                f'"{node["name"]}" contains no photos.', parent=self.root)
+            return
+
+        times = self._state.get("download_secs_per_photo") or []
+        secs_per = sum(times) / len(times) if times else self._DL_DEFAULT_SECS_PER_PHOTO
+        subs_note = " (including sub-albums)" if include_subs else ""
+        if not messagebox.askyesno(
+                "Begin Download?",
+                f"Source album:  {node.get('fullname', node['name'])}\n"
+                f"Photos:  {n_photos:,}{subs_note}\n"
+                f"Estimated time:  {_format_duration(secs_per * n_photos)}\n"
+                f"Destination:  {dest_root}\n\n"
+                "Begin the download?",
+                parent=self.root):
+            return
+
+        self._run_album_download(node, include_subs, dest_root)
+
+    def _run_album_download(self, node: dict, include_subs: bool, dest_root: Path):
+        """Progress dialog + background worker for an album download."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Downloading Album")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        cancel_evt = threading.Event()
+
+        action_var = tk.StringVar(value="Fetching image lists…")
+        count_var  = tk.StringVar(value="")
+        ttk.Label(dlg, textvariable=action_var, width=60, anchor='w',
+                  padding=(16, 12, 16, 4)).pack()
+        bar = ttk.Progressbar(dlg, mode="determinate", length=380, maximum=1, value=0)
+        bar.pack(padx=16, pady=(0, 4))
+        ttk.Label(dlg, textvariable=count_var, padding=(16, 0, 16, 4)).pack()
+
+        def _cancel():
+            cancel_evt.set()
+            action_var.set("Cancelling…")
+            cancel_btn.config(state="disabled")
+        cancel_btn = ttk.Button(dlg, text="Cancel", command=_cancel)
+        cancel_btn.pack(pady=(0, 12))
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dlg.geometry(f"+{rx + (rw - dlg.winfo_reqwidth()) // 2}"
+                     f"+{ry + (rh - dlg.winfo_reqheight()) // 2}")
+
+        def progress(done: int, total: int, name: str):
+            def _apply():
+                if dlg.winfo_exists() and not cancel_evt.is_set():
+                    bar.config(maximum=max(total, 1), value=done)
+                    action_var.set(_truncate(name, 60))
+                    count_var.set(f"{done:,} of {total:,}")
+            self.root.after(0, _apply)
+
+        def finish(downloaded: int, skipped: int, errors: int, dl_secs: float,
+                   cancelled: bool, err_msg: str):
+            if dlg.winfo_exists():
+                dlg.destroy()
+            if err_msg:
+                messagebox.showerror("Download Album", err_msg, parent=self.root)
+                self.set_status(f"Album download failed: {err_msg}")
+                return
+            if downloaded:
+                # Rolling per-photo average over the last ten downloads;
+                # persisted via self._state when the app closes.
+                times = list(self._state.get("download_secs_per_photo") or [])
+                times.append(round(dl_secs / downloaded, 2))
+                self._state["download_secs_per_photo"] = times[-10:]
+            bits = [f"downloaded {downloaded:,}"]
+            if skipped:
+                bits.append(f"skipped {skipped:,} already present")
+            if errors:
+                bits.append(f"{errors:,} errors (see log)")
+            summary = (("Download cancelled: " if cancelled else "Download complete: ")
+                       + ", ".join(bits) + ".")
+            self.set_status(summary)
+            (messagebox.showwarning if errors else messagebox.showinfo)(
+                "Download Album", f"{summary}\n\nDestination:\n{dest_root}",
+                parent=self.root)
+
+        threading.Thread(
+            target=self._worker_download_album,
+            args=(node, include_subs, dest_root, cancel_evt, progress, finish),
+            daemon=True).start()
+
+    def _worker_download_album(self, node: dict, include_subs: bool, dest_root: Path,
+                               cancel_evt: threading.Event, progress, finish):
+        downloaded = skipped = errors = 0
+        dl_secs = 0.0
+        try:
+            creds  = _store.load_credentials()
+            params = _store.load_op_params()
+            verify = creds.get("verify_ssl", True)
+            client = AlbumHierarchy.PiwigoClient(
+                creds["url"], creds["username"], creds["password"],
+                verify_ssl=verify,
+                rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+            client.login(creds["username"], creds["password"])
+            try:
+                # Enumerate the albums to download, each with its destination directory
+                # (nested to mirror the album hierarchy).
+                jobs: list[tuple[dict, Path]] = []
+
+                def walk(n: dict, dir_: Path):
+                    jobs.append((n, dir_))
+                    if include_subs:
+                        for ch in n.get("children", []):
+                            walk(ch, dir_ / _sanitize_filename(ch["name"]))
+                walk(node, dest_root)
+
+                album_lists: list[tuple[Path, list]] = []
+                total = 0
+                for n_, dir_ in jobs:
+                    if cancel_evt.is_set():
+                        break
+                    imgs = client.get_album_images(n_["id"])
+                    album_lists.append((dir_, imgs))
+                    total += len(imgs)
+
+                done = 0
+                for dir_, imgs in album_lists:
+                    if cancel_evt.is_set():
+                        break
+                    dir_.mkdir(parents=True, exist_ok=True)
+                    used: set[str] = set()
+                    for img in imgs:
+                        if cancel_evt.is_set():
+                            break
+                        done += 1
+                        fname = _photo_filename(img)
+                        stem, ext = os.path.splitext(fname)
+                        n = 2
+                        while fname.lower() in used:
+                            fname = f"{stem} ({n}){ext}"
+                            n += 1
+                        used.add(fname.lower())
+                        img_path = dir_ / fname
+                        if img_path.exists():
+                            skipped += 1
+                            progress(done, total, f"Skipping {fname}")
+                            continue
+                        progress(done, total, fname)
+                        try:
+                            t0   = time.monotonic()
+                            info = client.get_image_info(int(img["id"]))
+                            url  = (info.get("element_url") or info.get("high_url")
+                                    or _pick_derivative_url(info, ("xxlarge", "xlarge", "large")))
+                            if not url:
+                                raise RuntimeError("no download URL in image info")
+                            with warnings.catch_warnings():
+                                if not verify:
+                                    warnings.simplefilter(
+                                        "ignore", urllib3.exceptions.InsecureRequestWarning)
+                                r = client.session.get(url, timeout=60)
+                            r.raise_for_status()
+                            img_path.write_bytes(r.content)
+                            _write_photo_xml(img_path.with_suffix(".xml"), info)
+                            dl_secs    += time.monotonic() - t0
+                            downloaded += 1
+                        except Exception as e:
+                            errors += 1
+                            logger.warning(
+                                f"Download of image {img.get('id')} ({fname}) failed: {e}")
+            finally:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+            self.root.after(0, lambda: finish(downloaded, skipped, errors, dl_secs,
+                                              cancel_evt.is_set(), ""))
+        except Exception as e:
+            logger.exception("Album download failed")
+            self.root.after(0, lambda e=e: finish(downloaded, skipped, errors, dl_secs,
+                                                  cancel_evt.is_set(), str(e)))
 
     # -----------------------------------------------------------------------
     # Unified thumbnail press / motion / release  (both sides, click + drag)
