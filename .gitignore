@@ -19,6 +19,9 @@ dist/
 # IDE
 .idea/
 
+# Local build script
+Build.bat
+
 # Runtime logs
 *.log
 
