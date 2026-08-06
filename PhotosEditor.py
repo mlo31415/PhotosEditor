@@ -1631,7 +1631,11 @@ class PhotosEditor:
             title="Select the directory to download the album into")
         if not dest:
             return
-        dest_root = Path(dest) / _sanitize_filename(node["name"])
+        # Mirror the album's position in the hierarchy: album A inside album B
+        # downloads into <dest>/B/A (fullname is the " / "-separated breadcrumb).
+        dest_root = Path(dest)
+        for part in node.get("fullname", node["name"]).split(" / "):
+            dest_root = dest_root / _sanitize_filename(part)
 
         n_photos = node.get("total_nb_images" if include_subs else "nb_images", 0)
         if n_photos == 0:
