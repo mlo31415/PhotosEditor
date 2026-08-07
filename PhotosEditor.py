@@ -153,7 +153,7 @@ def _dict_to_xml(tag: str, value) -> "ET.Element":
     return el
 
 
-_XML_TOP_FIELDS  = ("id", "file", "date_creation", "name", "comment", "author")
+_XML_TOP_FIELDS  = ("id", "file", "date_creation", "name", "author")   # comment goes in the .txt
 _XML_ITEM_FIELDS = ("name", "id", "url", "page_url")   # kept for each tag/category item
 
 
@@ -1852,6 +1852,8 @@ class PhotosEditor:
                             r.raise_for_status()
                             img_path.write_bytes(r.content)
                             _write_photo_xml(img_path.with_suffix(".xml"), info)
+                            img_path.with_suffix(".txt").write_text(
+                                str(info.get("comment") or ""), encoding="utf-8")
                             dl_secs    += time.monotonic() - t0
                             downloaded += 1
                         except Exception as e:
