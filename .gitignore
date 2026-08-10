@@ -27,4 +27,5 @@ Build.bat
 
 # Runtime / per-user state
 PhotosEditor State.json
+PhotosEditor SS Review Done.json
 AlbumHierarchy.json

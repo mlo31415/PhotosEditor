@@ -22,6 +22,7 @@ import logging
 import warnings
 import atexit
 import time
+import random
 import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -30,7 +31,7 @@ from io import BytesIO
 from datetime import datetime
 
 try:
-    from PIL import Image, ImageTk, IptcImagePlugin
+    from PIL import Image, ImageTk, ImageDraw, IptcImagePlugin
     PIL_AVAILABLE = True
 except Exception:
     PIL_AVAILABLE = False
@@ -178,6 +179,69 @@ def _format_duration(secs: float) -> str:
         return f"{mins} minute{'s' if mins != 1 else ''}" + (f" {s} seconds" if s else "")
     hours, m = divmod(mins, 60)
     return f"{hours} hour{'s' if hours != 1 else ''}" + (f" {m} minutes" if m else "")
+
+
+# ---------------------------------------------------------------------------
+# SlideShow output-log support (Review SS Comments mode)
+# ---------------------------------------------------------------------------
+SS_LOG_GLOB  = "SlideShow Output *.json"
+SS_DONE_FILE = _SCRIPT_DIR / "PhotosEditor SS Review Done.json"
+
+
+def _read_ss_records(path: Path) -> list[dict]:
+    """Parse a SlideShow output log: concatenated pretty-printed JSON objects."""
+    text = path.read_text(encoding="utf-8")
+    decoder = json.JSONDecoder()
+    records = []
+    i = 0
+    while i < len(text):
+        if text[i].isspace():
+            i += 1
+            continue
+        obj, i = decoder.raw_decode(text, i)
+        records.append(obj)
+    return records
+
+
+def _ss_record_key(rec: dict) -> str:
+    """Stable identity of one SS record, for the done-list."""
+    return f'{rec.get("photo id")}|{rec.get("saved", "")}'
+
+
+def _load_ss_done() -> set:
+    try:
+        if SS_DONE_FILE.exists():
+            with open(SS_DONE_FILE, encoding="utf-8") as f:
+                return set(json.load(f).get("done", []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_ss_done(done: set) -> None:
+    try:
+        tmp = SS_DONE_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"done": sorted(done)}, f, indent=2)
+        tmp.replace(SS_DONE_FILE)
+    except Exception as e:
+        logger.warning(f"Could not save SS review done-list: {e}")
+
+
+def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64) -> "ImageTk.PhotoImage":
+    """A round thumbnail of the face at box (x, y, w, h), as in SlideShow's
+    Identify Photo table.  Out-of-bounds crops are padded (black under the mask)
+    rather than clamped, so edge faces are not distorted."""
+    x, y, w, h = box
+    cx, cy = x + w / 2, y + h / 2
+    r = 0.65 * (w * w + h * h) ** 0.5
+    square = img.crop((int(cx - r), int(cy - r), int(cx + r), int(cy + r))).resize(
+        (size, size), Image.LANCZOS)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+    thumb = Image.new("RGB", (size, size), bg)
+    thumb.paste(square, (0, 0), mask)
+    return ImageTk.PhotoImage(thumb)
 
 
 def _load_state() -> dict:
@@ -679,6 +743,14 @@ class PhotosEditor:
         # ── editor dialog (built lazily on first double-click) ───────────────
         self._editor_dlg: tk.Toplevel | None = None
 
+        # ── Review SS Comments mode state ───────────────────────────────────
+        self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
+        self._ss_records:      list = []    # unreviewed records of the current log file
+        self._ss_rec_index:    int  = 0
+        self._ss_log_name:     str  = ""
+        self._ss_done:         set  = set()
+        self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
+
         self._build_ui()
         self._restore_state()
 
@@ -705,6 +777,10 @@ class PhotosEditor:
         self._zoom_btn = ttk.Button(toolbar, text="Zoom",
                                     command=self._toggle_zoom)
         self._zoom_btn.pack(side="left", padx=2)
+
+        self._ss_review_btn = ttk.Button(toolbar, text="Review SS Comments",
+                                         command=self._toggle_ss_review)
+        self._ss_review_btn.pack(side="left", padx=2)
 
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
@@ -843,8 +919,9 @@ class PhotosEditor:
         # Refresh the thumbnail in whichever grid it came from.
         self._refresh_current_thumbnail()
 
-    def _build_editor_dialog_content(self, dlg: tk.Toplevel):
-        """Populate the editor Toplevel with all editor widgets."""
+    def _build_editor_dialog_content(self, dlg: "tk.Toplevel | ttk.Frame"):
+        """Populate the editor's container (the Photo Editor Toplevel, or the
+        right half of the Review SS Comments split screen) with all editor widgets."""
         # Vertical pane: photo viewer (top) / custom fields (bottom)
         vpane = ttk.PanedWindow(dlg, orient="vertical")
         vpane.pack(fill="both", expand=True)
@@ -1871,6 +1948,361 @@ class PhotosEditor:
             logger.exception("Album download failed")
             self.root.after(0, lambda e=e: finish(downloaded, skipped, errors, dl_secs,
                                                   cancel_evt.is_set(), str(e)))
+
+    # -----------------------------------------------------------------------
+    # Review SS Comments  (split screen: SlideShow record | embedded editor)
+    # -----------------------------------------------------------------------
+    def _toggle_ss_review(self):
+        if self._ss_review_frame is not None:
+            self._exit_ss_review()
+        else:
+            self._enter_ss_review()
+
+    def _enter_ss_review(self):
+        # The SS output directory is configured once and remembered in State.json --
+        # but only once it has actually yielded records, so a wrong pick can be redone
+        self._ss_done = _load_ss_done()
+        d = self._state.get("ss_review_dir", "")
+        while True:
+            if not d or not Path(d).is_dir():
+                d = filedialog.askdirectory(
+                    parent=self.root, mustexist=True,
+                    title="Select the directory containing the SlideShow output files")
+                if not d:
+                    return
+            # For now: pick a file at random from those with unreviewed records
+            files = list(Path(d).glob(SS_LOG_GLOB))
+            random.shuffle(files)
+            chosen, records = None, []
+            for f in files:
+                try:
+                    recs = [r for r in _read_ss_records(f)
+                            if _ss_record_key(r) not in self._ss_done]
+                except Exception as e:
+                    logger.warning(f"Could not parse SS log {f.name}: {e}")
+                    continue
+                if recs:
+                    chosen, records = f, recs
+                    break
+            if chosen is not None:
+                break
+            if not messagebox.askyesno(
+                    "Review SS Comments",
+                    f"No unreviewed SlideShow records found in\n{d}\n\n"
+                    "Select a different folder?",
+                    parent=self.root):
+                return
+            d = ""      # forces the folder dialog on the next pass
+        self._state["ss_review_dir"] = d
+
+        # The editor's widgets are about to be rebuilt inside the review panel,
+        # so an open editor dialog must be closed (and its edits dealt with) first.
+        if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
+            self._save_current_custom_fields()
+            if self._photo_edited and not messagebox.askyesno(
+                    "Unsaved Edits",
+                    "The photo in the editor has been edited but not uploaded.\n\n"
+                    "Continue without uploading?",
+                    icon="warning", parent=self._editor_dlg):
+                return
+            self._state["editor_geometry"] = self._editor_dlg.geometry()
+            self._editor_dlg.grab_release()
+            self._editor_dlg.destroy()
+        self._editor_dlg   = None
+        self._photo_edited = False
+
+        self._ss_records   = records
+        self._ss_rec_index = 0
+        self._ss_log_name  = chosen.name
+
+        self._main_pane.pack_forget()
+        self._zoom_btn.config(state="disabled")
+        self._ss_review_btn.config(text="Exit Review")
+
+        pane = ttk.PanedWindow(self.root, orient="horizontal")
+        pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
+        self._ss_review_frame = pane
+        left = ttk.LabelFrame(pane, text="SlideShow Record", padding=6)
+        pane.add(left, weight=2)
+        right = ttk.Frame(pane)
+        pane.add(right, weight=3)
+        self._build_ss_left_panel(left)
+        self._build_editor_dialog_content(right)    # the full editor, embedded
+        self._clear_editor()
+
+        # Editor keyboard shortcuts, normally bound to the editor dialog
+        self.root.bind("<Control-z>", lambda e: self._undo_edit())
+        self.root.bind("<Control-u>", lambda e: self._upload_current_photo())
+        self.root.bind("<Control-s>", lambda e: self._upload_current_photo())
+        self.root.bind("<Control-y>", lambda e: self._crop_photo())
+        self.root.bind("<Control-i>", lambda e: self._open_in_irfanview())
+        self.root.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
+        self.root.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
+        self.root.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
+        self.root.bind("<Control-h>", lambda e: self._show_shortcuts_help())
+
+        self._show_ss_record()
+
+    def _exit_ss_review(self):
+        if not self._ss_confirm_discard():
+            return
+        self._ss_load_gen += 1              # invalidate any in-flight record load
+        self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
+        self._ss_review_frame = None
+        # Reset editor state that pointed into the destroyed widgets; the next
+        # thumbnail double-click rebuilds the editor in its normal dialog.
+        self._viewer_image       = None
+        self._viewer_tk          = None
+        self._current_image_dict = None
+        self._edit_history.clear()
+        self._photo_edited = False
+
+        for seq in ("<Control-u>", "<Control-s>", "<Control-y>", "<Control-i>",
+                    "<Control-l>", "<Control-L>", "<Control-n>", "<Control-h>"):
+            self.root.unbind(seq)
+        self.root.bind("<Control-z>", self._on_ctrl_z)   # back to drag-drop undo
+
+        self._zoom_btn.config(state="normal")
+        self._ss_review_btn.config(text="Review SS Comments")
+        self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
+
+    # True if it is OK to leave the current record (asking about unsaved edits)
+    def _ss_confirm_discard(self) -> bool:
+        self._save_current_custom_fields()
+        if self._photo_edited:
+            if not messagebox.askyesno(
+                    "Unsaved Edits",
+                    "This photo has been edited but not uploaded to Piwigo.\n\n"
+                    "Continue without uploading?",
+                    icon="warning", parent=self.root):
+                return False
+            self._photo_edited = False
+        return True
+
+    def _build_ss_left_panel(self, parent: ttk.LabelFrame):
+        self._ss_pos_var = tk.StringVar()
+        ttk.Label(parent, textvariable=self._ss_pos_var,
+                  font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
+
+        info = ttk.Frame(parent)
+        info.pack(fill="x", pady=(6, 0))
+        self._ss_field_vars = {}
+        for row, (label, key) in enumerate((("Saved", "saved"), ("Album", "album"),
+                                            ("Editor", "editor"),
+                                            ("Photo date", "photo date"))):
+            ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
+                                                   sticky="nw", padx=(0, 6))
+            var = tk.StringVar()
+            ttk.Label(info, textvariable=var, wraplength=380,
+                      anchor="w", justify="left").grid(row=row, column=1, sticky="w")
+            self._ss_field_vars[key] = var
+
+        ttk.Label(parent, text="Faces").pack(anchor="w", pady=(10, 2))
+        holder = ttk.Frame(parent)
+        holder.pack(fill="both", expand=True)
+        bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
+        self._ss_faces_bg = bg
+        # PIL can't parse Tk system color names like "SystemButtonFace" --
+        # convert once to an RGB tuple for the thumbnail compositing
+        r16, g16, b16 = parent.winfo_rgb(bg)
+        self._ss_faces_bg_rgb = (r16 // 256, g16 // 256, b16 // 256)
+        canvas = tk.Canvas(holder, highlightthickness=0, bg=bg)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(canvas, bg=bg)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        # Wheel scrolling only while the pointer is over the faces list
+        canvas.bind("<Enter>", lambda e: canvas.bind_all(
+            "<MouseWheel>", lambda ev: canvas.yview_scroll(
+                -1 if ev.delta > 0 else 1, "units")))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        self._ss_faces_canvas = canvas
+        self._ss_faces_frame  = inner
+
+        ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
+        self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
+                                        state="disabled", font=("TkDefaultFont", 10))
+        self._ss_comment_text.pack(fill="x")
+
+        nav = ttk.Frame(parent)
+        nav.pack(pady=10)
+        self._ss_prev_btn = ttk.Button(nav, text="◀ Prev",
+                                       command=lambda: self._ss_step(-1))
+        self._ss_next_btn = ttk.Button(nav, text="Next ▶",
+                                       command=lambda: self._ss_step(+1))
+        self._ss_done_btn = ttk.Button(nav, text="Mark Done",
+                                       command=self._ss_mark_done)
+        self._ss_prev_btn.pack(side="left", padx=4)
+        self._ss_next_btn.pack(side="left", padx=4)
+        self._ss_done_btn.pack(side="left", padx=(16, 4))
+
+    def _show_ss_record(self):
+        rec = self._ss_records[self._ss_rec_index]
+        self._ss_pos_var.set(f"Record {self._ss_rec_index + 1} of "
+                             f"{len(self._ss_records)}  —  {self._ss_log_name}")
+        for key, var in self._ss_field_vars.items():
+            var.set(str(rec.get(key) or ""))
+        self._ss_comment_text.config(state="normal")
+        self._ss_comment_text.delete("1.0", "end")
+        self._ss_comment_text.insert("1.0", str(rec.get("comment") or ""))
+        self._ss_comment_text.config(state="disabled")
+        self._ss_prev_btn.config(
+            state="normal" if self._ss_rec_index > 0 else "disabled")
+        self._ss_next_btn.config(
+            state="normal" if self._ss_rec_index < len(self._ss_records) - 1
+            else "disabled")
+
+        # Rebuild the face rows (thumbnails arrive later, from the worker)
+        bg = self._ss_faces_bg
+        for w in self._ss_faces_frame.winfo_children():
+            w.destroy()
+        self._ss_face_thumbs = []           # keeps PhotoImage references alive
+        self._ss_face_labels = []
+        faces = rec.get("faces") or []
+        if not faces:
+            tk.Label(self._ss_faces_frame, text="(No faces in this record)",
+                     fg="gray", bg=bg).grid(row=0, column=0, padx=4, pady=4)
+        for i, face in enumerate(faces):
+            number = face.get("number", i + 1)
+            name   = (face.get("name") or "").strip()
+            tk.Label(self._ss_faces_frame, text=f"#{number}", bg=bg,
+                     font=("TkDefaultFont", 10)).grid(row=i, column=0,
+                                                      sticky="e", padx=(0, 6))
+            thumb_lbl = tk.Label(self._ss_faces_frame, text="…", bg=bg,
+                                 width=9, fg="gray")
+            thumb_lbl.grid(row=i, column=1, padx=(0, 10), pady=3)
+            self._ss_face_labels.append(thumb_lbl)
+            tk.Label(self._ss_faces_frame,
+                     text=name if name else "(unnamed)", bg=bg,
+                     fg="black" if name else "gray",
+                     font=("TkDefaultFont", 11)).grid(row=i, column=2, sticky="w")
+        self._ss_faces_frame.update_idletasks()
+        self._ss_faces_canvas.configure(
+            scrollregion=self._ss_faces_canvas.bbox("all") or (0, 0, 0, 0))
+        self._ss_faces_canvas.yview_moveto(0)
+
+        # Load the photo: the editor side by id, and the face thumbnails from it
+        self._ss_load_gen += 1
+        pid = rec.get("photo id")
+        if pid is None:
+            self._clear_editor()
+            self.set_status("This record has no Piwigo photo id — "
+                            "the photo cannot be loaded.")
+            return
+        threading.Thread(target=self._ss_worker_load_photo,
+                         args=(rec, int(pid), self._ss_load_gen),
+                         daemon=True).start()
+
+    def _ss_step(self, delta: int):
+        new = self._ss_rec_index + delta
+        if not (0 <= new < len(self._ss_records)):
+            return
+        if not self._ss_confirm_discard():
+            return
+        self._ss_rec_index = new
+        self._show_ss_record()
+
+    def _ss_mark_done(self):
+        if not self._ss_confirm_discard():
+            return
+        rec = self._ss_records[self._ss_rec_index]
+        self._ss_done.add(_ss_record_key(rec))
+        _save_ss_done(self._ss_done)
+        del self._ss_records[self._ss_rec_index]
+        if not self._ss_records:
+            messagebox.showinfo("Review SS Comments",
+                                "All records in this file have been reviewed.",
+                                parent=self.root)
+            self._exit_ss_review()
+            return
+        self._ss_rec_index = min(self._ss_rec_index, len(self._ss_records) - 1)
+        self._show_ss_record()
+
+    def _ss_worker_load_photo(self, rec: dict, photo_id: int, gen: int):
+        """Fetch the record's photo info (for the editor) and, when the record
+        has faces, the original image (for the face thumbnails)."""
+        try:
+            creds  = _store.load_credentials()
+            params = _store.load_op_params()
+            verify = creds.get("verify_ssl", True)
+            client = AlbumHierarchy.PiwigoClient(
+                creds["url"], creds["username"], creds["password"],
+                verify_ssl=verify,
+                rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
+            client.login(creds["username"], creds["password"])
+            try:
+                info = client.get_image_info(photo_id)
+                img  = None
+                scale = 1.0
+                if rec.get("faces"):
+                    # The logged boxes are in original-image coordinates, but the
+                    # original can be slow to fetch -- use a mid-size derivative
+                    # and scale the boxes to it instead.
+                    url = None
+                    try:
+                        orig_w = int(info.get("width") or 0)
+                    except (TypeError, ValueError):
+                        orig_w = 0
+                    for key in ("large", "xlarge", "xxlarge"):
+                        dv = (info.get("derivatives") or {}).get(key) or {}
+                        try:
+                            dv_w = int(dv.get("width") or 0)
+                        except (TypeError, ValueError):
+                            dv_w = 0
+                        if dv.get("url") and dv_w and orig_w:
+                            url, scale = dv["url"], dv_w / orig_w
+                            break
+                    if url is None:
+                        url = (info.get("element_url") or info.get("high_url")
+                               or _pick_derivative_url(info, ("xxlarge", "xlarge", "large")))
+                        scale = 1.0
+                    if url:
+                        with warnings.catch_warnings():
+                            if not verify:
+                                warnings.simplefilter(
+                                    "ignore", urllib3.exceptions.InsecureRequestWarning)
+                            r = client.session.get(url, timeout=60)
+                        r.raise_for_status()
+                        img = Image.open(BytesIO(r.content))
+                        img.load()
+                        if img.mode != "RGB":
+                            img = img.convert("RGB")
+            finally:
+                try:
+                    client.logout()
+                except Exception:
+                    pass
+
+            def _apply(info=info, img=img, scale=scale):
+                if gen != self._ss_load_gen or self._ss_review_frame is None:
+                    return
+                self._on_thumb_click(info)      # load the editor side
+                if img is not None:
+                    for lbl, face in zip(self._ss_face_labels,
+                                         rec.get("faces") or []):
+                        box = face.get("box")
+                        if not (isinstance(box, (list, tuple)) and len(box) == 4):
+                            continue
+                        try:
+                            thumb = _round_face_thumb(
+                                img, [v * scale for v in box], self._ss_faces_bg_rgb)
+                        except Exception:
+                            logger.warning(f"Face thumbnail failed for box {box}",
+                                           exc_info=True)
+                            continue
+                        self._ss_face_thumbs.append(thumb)
+                        lbl.config(image=thumb, text="", width=0)
+                elif rec.get("faces"):
+                    for lbl in self._ss_face_labels:
+                        lbl.config(text="(n/a)")
+            self.root.after(0, _apply)
+        except Exception as e:
+            logger.warning(f"Could not load photo {photo_id} for SS review: {e}")
+            self.root.after(0, lambda e=e: (
+                gen == self._ss_load_gen and self._ss_review_frame is not None and
+                self.set_status(f"Could not load photo {photo_id}: {e}")))
 
     # -----------------------------------------------------------------------
     # Unified thumbnail press / motion / release  (both sides, click + drag)
