@@ -22,7 +22,6 @@ import logging
 import warnings
 import atexit
 import time
-import random
 import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -136,6 +135,15 @@ def _photo_filename(img_dict: dict) -> str:
     return _sanitize_filename(name) + ext.lower()
 
 
+_NEEDS_ID_FORMS = {"needid", "needsid"}     # accepted spellings, punctuation-insensitive
+
+
+def _is_needs_id_tag_name(name: str) -> bool:
+    """True for the Needs-ID tag however it is spelled ("Needs-ID" as PE writes
+    it, "needs id", "Need_ID", ...)."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower()) in _NEEDS_ID_FORMS
+
+
 def _dict_to_xml(tag: str, value) -> "ET.Element":
     """Recursively convert a dict/list/scalar into an XML element tree."""
     # XML element names can't start with a digit or contain arbitrary punctuation
@@ -206,6 +214,34 @@ def _read_ss_records(path: Path) -> list[dict]:
 def _ss_record_key(rec: dict) -> str:
     """Stable identity of one SS record, for the done-list."""
     return f'{rec.get("photo id")}|{rec.get("saved", "")}'
+
+
+def _collect_ss_records(directory: Path, done: set) -> list[dict]:
+    """Every unreviewed record from every SlideShow log in directory, ordered so
+    that photos carrying more than one record come first, each photo's records
+    adjacent, followed by the photos with a single record.  Groups and records
+    keep the order they were met in (log files oldest first, since their names
+    carry the date).  Each record gains a "_log file" key naming its log."""
+    records: list[dict] = []
+    for path in sorted(directory.glob(SS_LOG_GLOB)):
+        try:
+            recs = _read_ss_records(path)
+        except Exception as e:
+            logger.warning(f"Could not parse SS log {path.name}: {e}")
+            continue
+        for rec in recs:
+            if _ss_record_key(rec) not in done:
+                rec["_log file"] = path.name
+                records.append(rec)
+
+    by_photo: dict = {}
+    for i, rec in enumerate(records):
+        pid = rec.get("photo id")
+        # A record with no photo id can't be grouped -- give it a key of its own
+        by_photo.setdefault(pid if pid is not None else f"\0no id {i}", []).append(rec)
+    groups = list(by_photo.values())
+    return ([rec for g in groups if len(g) > 1 for rec in g] +
+            [rec for g in groups if len(g) == 1 for rec in g])
 
 
 def _load_ss_done() -> set:
@@ -745,9 +781,8 @@ class PhotosEditor:
 
         # ── Review SS Comments mode state ───────────────────────────────────
         self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
-        self._ss_records:      list = []    # unreviewed records of the current log file
+        self._ss_records:      list = []    # unreviewed records, multi-record photos first
         self._ss_rec_index:    int  = 0
-        self._ss_log_name:     str  = ""
         self._ss_done:         set  = set()
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
 
@@ -1697,22 +1732,31 @@ class PhotosEditor:
         if str(album_id) in sel and len(sel) > 1:
             nodes = [atw._node_by_iid[s] for s in sel if s in atw._node_by_iid]
             label = f"Download {len(nodes)} Albums"
+            needs_label = f"Download Need_IDs from {len(nodes)} Albums"
         else:
             nodes = [node]
             label = "Download Album"
+            needs_label = "Download Need_IDs from Album"
         menu.add_separator()
         menu.add_command(
             label=label,
             command=lambda: self.root.after(50, lambda: self._download_album(nodes)))
+        menu.add_command(
+            label=needs_label,
+            command=lambda: self.root.after(
+                50, lambda: self._download_album(nodes, needs_id_only=True)))
 
-    def _download_album(self, nodes: list[dict]):
-        """RMB 'Download Album': confirm scope, pick destination, estimate, confirm, go."""
+    def _download_album(self, nodes: list[dict], needs_id_only: bool = False):
+        """RMB 'Download Album' / 'Download Need_IDs from Album': confirm scope,
+        pick destination, estimate, confirm, go.  With needs_id_only the albums are
+        walked exactly as usual but only photos tagged Needs-ID are fetched."""
+        title = "Download Need_IDs" if needs_id_only else "Download Album"
         include_subs = False
         if any(n.get("children") for n in nodes):
             what = (f'"{nodes[0]["name"]}" has sub-albums.' if len(nodes) == 1 else
                     "One or more of the selected albums have sub-albums.")
             ans = messagebox.askyesnocancel(
-                "Download Album",
+                title,
                 f"{what}\n\nDownload the sub-albums as well?",
                 parent=self.root)
             if ans is None:
@@ -1756,8 +1800,7 @@ class PhotosEditor:
         if n_photos == 0:
             what = (f'"{nodes[0]["name"]}" contains' if len(nodes) == 1 else
                     "The selected albums contain")
-            messagebox.showinfo("Download Album",
-                                f"{what} no photos.", parent=self.root)
+            messagebox.showinfo(title, f"{what} no photos.", parent=self.root)
             return
 
         names = [n.get("fullname", n["name"]) for n in nodes]
@@ -1770,26 +1813,37 @@ class PhotosEditor:
         times = self._state.get("download_secs_per_photo") or []
         secs_per = sum(times) / len(times) if times else self._DL_DEFAULT_SECS_PER_PHOTO
         subs_note = " (including sub-albums)" if include_subs else ""
+        # Which of those photos carry the tag is only known once the image lists
+        # have been fetched, so the count and the estimate are upper bounds here.
+        if needs_id_only:
+            photos_txt = (f"Photos:  up to {n_photos:,}{subs_note}, "
+                          f'only those tagged "Needs-ID"')
+            time_txt   = f"Estimated time:  up to {_format_duration(secs_per * n_photos)}"
+        else:
+            photos_txt = f"Photos:  {n_photos:,}{subs_note}"
+            time_txt   = f"Estimated time:  {_format_duration(secs_per * n_photos)}"
         if not messagebox.askyesno(
                 "Begin Download?",
                 f"{src_txt}\n"
-                f"Photos:  {n_photos:,}{subs_note}\n"
-                f"Estimated time:  {_format_duration(secs_per * n_photos)}\n"
+                f"{photos_txt}\n"
+                f"{time_txt}\n"
                 f"Destination:  {dest_display}\n\n"
                 "Begin the download?",
                 parent=self.root):
             return
 
-        self._run_album_download(roots, include_subs, dest_display)
+        self._run_album_download(roots, include_subs, dest_display, needs_id_only)
 
     def _run_album_download(self, roots: list[tuple[dict, Path]],
-                            include_subs: bool, dest_display: Path):
+                            include_subs: bool, dest_display: Path,
+                            needs_id_only: bool = False):
         """Progress dialog + background worker for an album download.
 
         roots holds (album_node, destination_dir) for each top-level album;
         dest_display is the path shown in the completion dialog."""
+        title = "Download Need_IDs" if needs_id_only else "Download Album"
         dlg = tk.Toplevel(self.root)
-        dlg.title("Downloading Album")
+        dlg.title("Downloading Need_IDs" if needs_id_only else "Downloading Album")
         dlg.resizable(False, False)
         dlg.grab_set()
         cancel_evt = threading.Event()
@@ -1830,8 +1884,14 @@ class PhotosEditor:
             if dlg.winfo_exists():
                 dlg.destroy()
             if err_msg:
-                messagebox.showerror("Download Album", err_msg, parent=self.root)
+                messagebox.showerror(title, err_msg, parent=self.root)
                 self.set_status(f"Album download failed: {err_msg}")
+                return
+            if not (downloaded or skipped or errors) and not cancelled:
+                msg = ('No photos tagged "Needs-ID" were found.' if needs_id_only
+                       else "No photos were found to download.")
+                self.set_status(msg)
+                messagebox.showinfo(title, msg, parent=self.root)
                 return
             if downloaded:
                 # Rolling per-photo average over the last ten downloads;
@@ -1848,16 +1908,17 @@ class PhotosEditor:
                        + ", ".join(bits) + ".")
             self.set_status(summary)
             (messagebox.showwarning if errors else messagebox.showinfo)(
-                "Download Album", f"{summary}\n\nDestination:\n{dest_display}",
+                title, f"{summary}\n\nDestination:\n{dest_display}",
                 parent=self.root)
 
         threading.Thread(
             target=self._worker_download_album,
-            args=(roots, include_subs, cancel_evt, progress, finish),
+            args=(roots, include_subs, cancel_evt, progress, finish, needs_id_only),
             daemon=True).start()
 
     def _worker_download_album(self, roots: list[tuple[dict, Path]], include_subs: bool,
-                               cancel_evt: threading.Event, progress, finish):
+                               cancel_evt: threading.Event, progress, finish,
+                               needs_id_only: bool = False):
         downloaded = skipped = errors = 0
         dl_secs = 0.0
         try:
@@ -1882,12 +1943,25 @@ class PhotosEditor:
                 for nd, root_dir in roots:
                     walk(nd, root_dir)
 
+                # An album's image list carries no tags, so the ids of the
+                # Needs-ID photos are fetched once and intersected below.
+                needs_ids: set = set()
+                if needs_id_only:
+                    for t in client.get_tags():
+                        if _is_needs_id_tag_name(t.get("name", "")):
+                            needs_ids |= client.get_tag_image_ids(int(t["id"]))
+                    logger.info(f"Needs-ID tag covers {len(needs_ids)} photos")
+
                 album_lists: list[tuple[Path, list]] = []
                 total = 0
                 for n_, dir_ in jobs:
                     if cancel_evt.is_set():
                         break
                     imgs = client.get_album_images(n_["id"])
+                    if needs_id_only:
+                        imgs = [i for i in imgs if int(i.get("id", -1)) in needs_ids]
+                        if not imgs:
+                            continue    # no folder for an album with nothing tagged
                     album_lists.append((dir_, imgs))
                     total += len(imgs)
 
@@ -1970,21 +2044,9 @@ class PhotosEditor:
                     title="Select the directory containing the SlideShow output files")
                 if not d:
                     return
-            # For now: pick a file at random from those with unreviewed records
-            files = list(Path(d).glob(SS_LOG_GLOB))
-            random.shuffle(files)
-            chosen, records = None, []
-            for f in files:
-                try:
-                    recs = [r for r in _read_ss_records(f)
-                            if _ss_record_key(r) not in self._ss_done]
-                except Exception as e:
-                    logger.warning(f"Could not parse SS log {f.name}: {e}")
-                    continue
-                if recs:
-                    chosen, records = f, recs
-                    break
-            if chosen is not None:
+            # Every log in the folder, photos with several records first
+            records = _collect_ss_records(Path(d), self._ss_done)
+            if records:
                 break
             if not messagebox.askyesno(
                     "Review SS Comments",
@@ -2013,7 +2075,6 @@ class PhotosEditor:
 
         self._ss_records   = records
         self._ss_rec_index = 0
-        self._ss_log_name  = chosen.name
 
         self._main_pane.pack_forget()
         self._zoom_btn.config(state="disabled")
@@ -2089,7 +2150,8 @@ class PhotosEditor:
         self._ss_field_vars = {}
         for row, (label, key) in enumerate((("Saved", "saved"), ("Album", "album"),
                                             ("Editor", "editor"),
-                                            ("Photo date", "photo date"))):
+                                            ("Photo date", "photo date"),
+                                            ("Log", "_log file"))):
             ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
                                                    sticky="nw", padx=(0, 6))
             var = tk.StringVar()
@@ -2144,8 +2206,15 @@ class PhotosEditor:
         # record's photo while this one is fetched from Piwigo
         self._clear_editor()
         self.photo_label_var.set("Loading…")
-        self._ss_pos_var.set(f"Record {self._ss_rec_index + 1} of "
-                             f"{len(self._ss_records)}  —  {self._ss_log_name}")
+        # Records for one photo sit together; say so, so they can be handled as a set
+        pid  = rec.get("photo id")
+        same = ([r for r in self._ss_records if r.get("photo id") == pid]
+                if pid is not None else [rec])
+        pos = f"Record {self._ss_rec_index + 1} of {len(self._ss_records)}"
+        if len(same) > 1:
+            pos += (f"   —   comment {same.index(rec) + 1} of {len(same)} "
+                    f"on this photo")
+        self._ss_pos_var.set(pos)
         for key, var in self._ss_field_vars.items():
             var.set(str(rec.get(key) or ""))
         self._ss_comment_text.config(state="normal")
@@ -2217,7 +2286,7 @@ class PhotosEditor:
         del self._ss_records[self._ss_rec_index]
         if not self._ss_records:
             messagebox.showinfo("Review SS Comments",
-                                "All records in this file have been reviewed.",
+                                "All records have been reviewed.",
                                 parent=self.root)
             self._exit_ss_review()
             return
