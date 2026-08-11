@@ -144,6 +144,17 @@ def _is_needs_id_tag_name(name: str) -> bool:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower()) in _NEEDS_ID_FORMS
 
 
+def _needs_identification(img: dict, needs_ids: set) -> bool:
+    """True if the photo is one of those wanting identification: either it
+    carries the Needs-ID tag (needs_ids holds the ids of those photos), or its
+    caption -- Piwigo's comment -- has a "??" marking an unidentified person."""
+    try:
+        tagged = int(img.get("id", -1)) in needs_ids
+    except (TypeError, ValueError):
+        tagged = False
+    return tagged or "??" in (img.get("comment") or "")
+
+
 def _dict_to_xml(tag: str, value) -> "ET.Element":
     """Recursively convert a dict/list/scalar into an XML element tree."""
     # XML element names can't start with a digit or contain arbitrary punctuation
@@ -1816,8 +1827,8 @@ class PhotosEditor:
         # Which of those photos carry the tag is only known once the image lists
         # have been fetched, so the count and the estimate are upper bounds here.
         if needs_id_only:
-            photos_txt = (f"Photos:  up to {n_photos:,}{subs_note}, "
-                          f'only those tagged "Needs-ID"')
+            photos_txt = (f"Photos:  up to {n_photos:,}{subs_note}, only those\n"
+                          f'          tagged "Needs-ID" or with "??" in the caption')
             time_txt   = f"Estimated time:  up to {_format_duration(secs_per * n_photos)}"
         else:
             photos_txt = f"Photos:  {n_photos:,}{subs_note}"
@@ -1888,7 +1899,8 @@ class PhotosEditor:
                 self.set_status(f"Album download failed: {err_msg}")
                 return
             if not (downloaded or skipped or errors) and not cancelled:
-                msg = ('No photos tagged "Needs-ID" were found.' if needs_id_only
+                msg = ('No photos tagged "Needs-ID" or with "??" in the caption '
+                       "were found." if needs_id_only
                        else "No photos were found to download.")
                 self.set_status(msg)
                 messagebox.showinfo(title, msg, parent=self.root)
@@ -1959,9 +1971,9 @@ class PhotosEditor:
                         break
                     imgs = client.get_album_images(n_["id"])
                     if needs_id_only:
-                        imgs = [i for i in imgs if int(i.get("id", -1)) in needs_ids]
+                        imgs = [i for i in imgs if _needs_identification(i, needs_ids)]
                         if not imgs:
-                            continue    # no folder for an album with nothing tagged
+                            continue    # no folder for an album with nothing to fetch
                     album_lists.append((dir_, imgs))
                     total += len(imgs)
 
