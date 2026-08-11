@@ -22,6 +22,9 @@ dist/
 # Local build script
 Build.bat
 
+# Documentation kept locally
+PhotosEditor.docx
+
 # Runtime logs
 *.log
 
