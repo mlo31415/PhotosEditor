@@ -2140,6 +2140,10 @@ class PhotosEditor:
 
     def _show_ss_record(self):
         rec = self._ss_records[self._ss_rec_index]
+        # Blank the editor side at once: it must not keep showing the previous
+        # record's photo while this one is fetched from Piwigo
+        self._clear_editor()
+        self.photo_label_var.set("Loading…")
         self._ss_pos_var.set(f"Record {self._ss_rec_index + 1} of "
                              f"{len(self._ss_records)}  —  {self._ss_log_name}")
         for key, var in self._ss_field_vars.items():
@@ -2187,7 +2191,7 @@ class PhotosEditor:
         self._ss_load_gen += 1
         pid = rec.get("photo id")
         if pid is None:
-            self._clear_editor()
+            self.photo_label_var.set("No photo selected")
             self.set_status("This record has no Piwigo photo id — "
                             "the photo cannot be loaded.")
             return
