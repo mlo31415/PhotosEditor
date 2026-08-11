@@ -3143,7 +3143,10 @@ class PhotosEditor:
         if not url:
             self.set_status("No URL available for this photo.")
             return
-        self.photo_label_var.set(name)
+        # In SS review mode the name is held at "Loading…" (set by _show_ss_record)
+        # until the image itself is on screen, so the editor side stays wholly blank
+        if self._ss_review_frame is None:
+            self.photo_label_var.set(name)
         self.photo_dim_var.set("")
         self.url_var.set(url)
         self.set_status(f"Loading \"{name}\"…")
@@ -3184,8 +3187,12 @@ class PhotosEditor:
             self.root.after(0, lambda: self._on_photo_loaded(pil, rich_dict))
         except Exception as e:
             logger.exception(f"Failed to load {url}")
-            self.root.after(0, lambda: self.set_status(
-                f"Error loading \"{img_dict.get('name', '')}\": {e}"))
+            name = img_dict.get("name") or img_dict.get("file") or "unknown"
+            def _failed(name=name, e=e):
+                # Never leave the name stuck at "Loading…" (SS review mode)
+                self.photo_label_var.set(name)
+                self.set_status(f"Error loading \"{name}\": {e}")
+            self.root.after(0, _failed)
 
     def _on_photo_loaded(self, pil: "Image.Image", img_dict: dict):
         """Called on the main thread once the full image has been downloaded."""
