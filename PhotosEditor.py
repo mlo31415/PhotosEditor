@@ -2157,12 +2157,15 @@ class PhotosEditor:
         ttk.Label(parent, textvariable=self._ss_pos_var,
                   font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
 
+        # Whoever proposed these corrections -- SlideShow's "editor" -- heads the record
+        self._ss_source_var = tk.StringVar()
+        ttk.Label(parent, textvariable=self._ss_source_var,
+                  font=("TkDefaultFont", 11, "bold")).pack(anchor="w", pady=(8, 0))
+
         info = ttk.Frame(parent)
         info.pack(fill="x", pady=(6, 0))
         self._ss_field_vars = {}
-        # "editor" is SlideShow's name for whoever proposed these corrections
         for row, (label, key) in enumerate((("Saved", "saved"), ("Album", "album"),
-                                            ("Correct Source", "editor"),
                                             ("Photo date", "photo date"),
                                             ("Log", "_log file"))):
             ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
@@ -2228,6 +2231,8 @@ class PhotosEditor:
             pos += (f"   —   comment {same.index(rec) + 1} of {len(same)} "
                     f"on this photo")
         self._ss_pos_var.set(pos)
+        self._ss_source_var.set(
+            f"Input from: {str(rec.get('editor') or '').strip() or '(unknown)'}")
         for key, var in self._ss_field_vars.items():
             var.set(str(rec.get(key) or ""))
         self._ss_comment_text.config(state="normal")
