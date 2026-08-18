@@ -205,9 +205,10 @@ def _format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 SS_LOG_GLOB  = "SlideShow Output *.json"
 SS_DONE_FILE = _SCRIPT_DIR / "PhotosEditor SS Review Done.json"
-# Record fields the SS user typed (shown bold); the rest SS derived for itself
+# Record fields the SS user typed (shown bold red); the rest SS derived for itself
 _SS_USER_TYPED_FIELDS = {"photo date"}      # "editor" heads the panel, "comment"
                                             # and the face names have their own widgets
+_SS_USER_TEXT_FG = "#CC0000"                # emphasis colour for what the user typed
 
 
 def _read_ss_records(path: Path) -> list[dict]:
@@ -2160,7 +2161,7 @@ class PhotosEditor:
         ttk.Label(parent, textvariable=self._ss_pos_var,
                   font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
 
-        # Everything the SS user typed is shown bold; labels and anything SS
+        # Everything the SS user typed is shown bold red; labels and anything SS
         # derived for itself (times, album path, file names) stay plain.
         bold = tkfont.nametofont("TkDefaultFont").copy()
         bold.configure(weight="bold")
@@ -2173,7 +2174,8 @@ class PhotosEditor:
                   font=("TkDefaultFont", 11)).pack(side="left")
         self._ss_source_var = tk.StringVar()
         ttk.Label(source_row, textvariable=self._ss_source_var,
-                  font=("TkDefaultFont", 11, "bold")).pack(side="left", padx=(5, 0))
+                  font=("TkDefaultFont", 11, "bold"),
+                  foreground=_SS_USER_TEXT_FG).pack(side="left", padx=(5, 0))
 
         info = ttk.Frame(parent)
         info.pack(fill="x", pady=(6, 0))
@@ -2187,14 +2189,16 @@ class PhotosEditor:
             opts = {"textvariable": var, "wraplength": 380,
                     "anchor": "w", "justify": "left"}
             if key in _SS_USER_TYPED_FIELDS:
-                opts["font"] = bold
+                opts["font"]       = bold
+                opts["foreground"] = _SS_USER_TEXT_FG
             ttk.Label(info, **opts).grid(row=row, column=1, sticky="w")
             self._ss_field_vars[key] = var
 
         ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
         self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
                                         state="disabled",
-                                        font=("TkDefaultFont", 10, "bold"))
+                                        font=("TkDefaultFont", 10, "bold"),
+                                        fg=_SS_USER_TEXT_FG)
         self._ss_comment_text.pack(fill="x")
 
         ttk.Label(parent, text="Faces").pack(anchor="w", pady=(10, 2))
@@ -2284,7 +2288,7 @@ class PhotosEditor:
             self._ss_face_labels.append(thumb_lbl)
             tk.Label(self._ss_faces_frame,
                      text=name if name else "(unnamed)", bg=bg,
-                     fg="black" if name else "gray",
+                     fg=_SS_USER_TEXT_FG if name else "gray",
                      font=("TkDefaultFont", 11, "bold") if name
                      else ("TkDefaultFont", 11)).grid(row=i, column=2, sticky="w")
         self._ss_faces_frame.update_idletasks()
