@@ -967,7 +967,7 @@ class PhotosEditor:
 
     def _build_editor_dialog_content(self, dlg: "tk.Toplevel | ttk.Frame"):
         """Populate the editor's container (the Photo Editor Toplevel, or the
-        right half of the Review SS Comments split screen) with all editor widgets."""
+        left half of the Review SS Comments split screen) with all editor widgets."""
         # Vertical pane: photo viewer (top) / custom fields (bottom)
         vpane = ttk.PanedWindow(dlg, orient="vertical")
         vpane.pack(fill="both", expand=True)
@@ -2036,7 +2036,7 @@ class PhotosEditor:
                                                   cancel_evt.is_set(), str(e)))
 
     # -----------------------------------------------------------------------
-    # Review SS Comments  (split screen: SlideShow record | embedded editor)
+    # Review SS Comments  (split screen: embedded editor | SlideShow record)
     # -----------------------------------------------------------------------
     def _toggle_ss_review(self):
         if self._ss_review_frame is not None:
@@ -2095,12 +2095,12 @@ class PhotosEditor:
         pane = ttk.PanedWindow(self.root, orient="horizontal")
         pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
         self._ss_review_frame = pane
-        left = ttk.LabelFrame(pane, text="SlideShow Record", padding=6)
-        pane.add(left, weight=2)
-        right = ttk.Frame(pane)
-        pane.add(right, weight=3)
-        self._build_ss_left_panel(left)
-        self._build_editor_dialog_content(right)    # the full editor, embedded
+        editor_side = ttk.Frame(pane)                       # the photo editor, left
+        pane.add(editor_side, weight=3)
+        record_side = ttk.LabelFrame(pane, text="SlideShow Record", padding=6)
+        pane.add(record_side, weight=2)                     # the SS input, right
+        self._build_editor_dialog_content(editor_side)      # the full editor, embedded
+        self._build_ss_record_panel(record_side)
         self._clear_editor()
 
         # Editor keyboard shortcuts, normally bound to the editor dialog
@@ -2152,7 +2152,7 @@ class PhotosEditor:
             self._photo_edited = False
         return True
 
-    def _build_ss_left_panel(self, parent: ttk.LabelFrame):
+    def _build_ss_record_panel(self, parent: ttk.LabelFrame):
         self._ss_pos_var = tk.StringVar()
         ttk.Label(parent, textvariable=self._ss_pos_var,
                   font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
