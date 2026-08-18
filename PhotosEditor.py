@@ -236,10 +236,12 @@ def _ss_record_key(rec: dict) -> str:
     carrying no photo id at all.  Content is used rather than the log's file
     name because SlideShow renames its log on every save, so a name-based key
     would shift under the reviewer and re-offer records already dealt with.
-    Keys beginning "_" are PE's own annotations (the log file name) and are
-    left out, so a record's key is the same before and after it is annotated.
+    Keys beginning "_" are PE's own annotations (the log file name) and the
+    "done" flag is the mark being recorded, so neither takes part: a record's
+    key is the same before and after it is annotated or marked.
     """
-    body = {k: v for k, v in rec.items() if not k.startswith("_")}
+    body = {k: v for k, v in rec.items()
+            if not k.startswith("_") and k != "done"}
     digest = hashlib.sha1(
         json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:8]
@@ -256,6 +258,52 @@ def _ss_is_done(rec: dict, done: set) -> bool:
     return _ss_record_key(rec) in done or _ss_legacy_record_key(rec) in done
 
 
+def _ss_write_records(path: Path, records: list[dict]) -> None:
+    """Rewrite a SlideShow log the way SlideShow writes it: pretty-printed JSON
+    objects separated by a blank line, with each four-number face box compacted
+    onto one line.  PE's own "_"-prefixed annotations are left out.  Written
+    through a temporary file, so an interrupted write cannot destroy the log."""
+    chunks = []
+    for rec in records:
+        body = {k: v for k, v in rec.items() if not k.startswith("_")}
+        text = json.dumps(body, indent=2, ensure_ascii=False)
+        text = re.sub(r"\[\s+(-?\d+),\s+(-?\d+),\s+(-?\d+),\s+(-?\d+)\s+\]",
+                      r"[\1, \2, \3, \4]", text)
+        chunks.append(text + "\n\n")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(chunks), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> bool:
+    """Record that rec has been reviewed, in the log that holds it.
+
+    The log is re-read before it is rewritten, so anything SlideShow appended
+    since it was loaded survives; and because SlideShow renames its log on
+    every save, the whole folder is searched when the expected name is gone.
+    Returns False if the record could not be found anywhere.
+    """
+    key = _ss_record_key(rec)
+    named = rec.get("_log file")
+    candidates = [directory / named] if named else []
+    candidates += [p for p in sorted(directory.glob(SS_LOG_GLOB))
+                   if p not in candidates]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            recs = _read_ss_records(path)
+        except Exception as e:
+            logger.warning(f"Could not parse SS log {path.name}: {e}")
+            continue
+        for r in recs:
+            if _ss_record_key(r) == key:
+                r["done"] = True
+                _ss_write_records(path, recs)
+                return True
+    return False
+
+
 def _collect_ss_records(directory: Path, done: set) -> list[dict]:
     """Every unreviewed record from every SlideShow log in directory, ordered so
     that photos carrying more than one record come first, each photo's records
@@ -270,9 +318,12 @@ def _collect_ss_records(directory: Path, done: set) -> list[dict]:
             logger.warning(f"Could not parse SS log {path.name}: {e}")
             continue
         for rec in recs:
-            if not _ss_is_done(rec, done):
-                rec["_log file"] = path.name
-                records.append(rec)
+            # "done" lives in the record itself; the separate done-list is only
+            # still consulted so records marked before the move stay marked
+            if rec.get("done") or _ss_is_done(rec, done):
+                continue
+            rec["_log file"] = path.name
+            records.append(rec)
 
     by_photo: dict = {}
     for i, rec in enumerate(records):
@@ -285,6 +336,9 @@ def _collect_ss_records(directory: Path, done: set) -> list[dict]:
 
 
 def _load_ss_done() -> set:
+    """The keys of records marked done before the flag moved into the log
+    itself.  Read only -- PE no longer writes this file, but keeps honouring it
+    so that nothing already reviewed comes back."""
     try:
         if SS_DONE_FILE.exists():
             with open(SS_DONE_FILE, encoding="utf-8") as f:
@@ -292,16 +346,6 @@ def _load_ss_done() -> set:
     except Exception:
         pass
     return set()
-
-
-def _save_ss_done(done: set) -> None:
-    try:
-        tmp = SS_DONE_FILE.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"done": sorted(done)}, f, indent=2)
-        tmp.replace(SS_DONE_FILE)
-    except Exception as e:
-        logger.warning(f"Could not save SS review done-list: {e}")
 
 
 def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64) -> "ImageTk.PhotoImage":
@@ -2429,8 +2473,15 @@ class PhotosEditor:
         if not self._ss_confirm_discard():
             return
         rec = self._ss_records[self._ss_rec_index]
-        self._ss_done.add(_ss_record_key(rec))
-        _save_ss_done(self._ss_done)
+        if not _ss_mark_record_done_in_log(
+                Path(self._state.get("ss_review_dir", "")), rec):
+            messagebox.showwarning(
+                "Review SS Comments",
+                "This record could not be found in the SlideShow logs, so it "
+                "has not been marked done.\n\nHas the log been moved or "
+                "rewritten while the review was open?", parent=self.root)
+            return
+        rec["done"] = True
         del self._ss_records[self._ss_rec_index]
         if not self._ss_records:
             messagebox.showinfo("Review SS Comments",
