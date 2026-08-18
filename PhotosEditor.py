@@ -2160,8 +2160,9 @@ class PhotosEditor:
         info = ttk.Frame(parent)
         info.pack(fill="x", pady=(6, 0))
         self._ss_field_vars = {}
+        # "editor" is SlideShow's name for whoever proposed these corrections
         for row, (label, key) in enumerate((("Saved", "saved"), ("Album", "album"),
-                                            ("Editor", "editor"),
+                                            ("Correct Source", "editor"),
                                             ("Photo date", "photo date"),
                                             ("Log", "_log file"))):
             ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
