@@ -295,6 +295,33 @@ def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64
     return ImageTk.PhotoImage(thumb)
 
 
+def _ss_face_circle_on_canvas(box, orig_size, display_rect):
+    """Where to ring a SlideShow face on the editor canvas.
+
+    box           (x, y, w, h) in original-photo pixels, as SS logged it
+    orig_size     (width, height) of the original photo on Piwigo
+    display_rect  (x0, y0, x1, y1) the photo occupies on the canvas
+
+    Returns the (x0, y0, x1, y1) bounding box of the circle SS crops its
+    thumbnail from, in canvas coordinates, or None when the box cannot belong
+    to this photo (so a stale record never draws a ring in the wrong place).
+    """
+    x, y, w, h = (float(v) for v in box)
+    ow, oh     = (float(v) for v in orig_size)
+    if ow <= 0 or oh <= 0 or w <= 0 or h <= 0:
+        return None
+    if x < 0 or y < 0 or x + w > ow or y + h > oh:
+        return None
+    px0, py0, px1, py1 = display_rect
+    tw, th = px1 - px0, py1 - py0
+    if tw <= 0 or th <= 0:
+        return None
+    cx, cy = x + w / 2, y + h / 2
+    r = 0.65 * (w * w + h * h) ** 0.5       # the radius _round_face_thumb crops
+    return (px0 + (cx - r) * tw / ow, py0 + (cy - r) * th / oh,
+            px0 + (cx + r) * tw / ow, py0 + (cy + r) * th / oh)
+
+
 def _load_state() -> dict:
     try:
         if STATE_FILE.exists():
@@ -800,6 +827,7 @@ class PhotosEditor:
         self._ss_rec_index:    int  = 0
         self._ss_done:         set  = set()
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
+        self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
         self._build_ui()
         self._restore_state()
@@ -2125,6 +2153,7 @@ class PhotosEditor:
         if not self._ss_confirm_discard():
             return
         self._ss_load_gen += 1              # invalidate any in-flight record load
+        self._ss_face_hl_ids = []
         self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
         self._ss_review_frame = None
         # Reset editor state that pointed into the destroyed widgets; the next
@@ -2250,6 +2279,7 @@ class PhotosEditor:
         # Blank the editor side at once: it must not keep showing the previous
         # record's photo while this one is fetched from Piwigo
         self._clear_editor()
+        self._ss_face_hl_ids = []       # _clear_editor wiped the canvas
         self.photo_label_var.set("Loading…")
         # Records for one photo sit together; say so, so they can be handled as a set
         pid  = rec.get("photo id")
@@ -2293,6 +2323,11 @@ class PhotosEditor:
             thumb_lbl = tk.Label(self._ss_faces_frame, text="…", bg=bg,
                                  width=9, fg="gray")
             thumb_lbl.grid(row=i, column=1, padx=(0, 10), pady=3)
+            # Hovering a thumbnail rings that face on the photo -- the way to
+            # pick one face out of a crowded photograph
+            box = face.get("box")
+            thumb_lbl.bind("<Enter>", lambda e, b=box: self._ss_highlight_face(b))
+            thumb_lbl.bind("<Leave>", self._ss_clear_face_highlight)
             self._ss_face_labels.append(thumb_lbl)
             tk.Label(self._ss_faces_frame,
                      text=name if name else "(unnamed)", bg=bg,
@@ -2315,6 +2350,46 @@ class PhotosEditor:
         threading.Thread(target=self._ss_worker_load_photo,
                          args=(rec, int(pid), self._ss_load_gen),
                          daemon=True).start()
+
+    # ── Ringing the hovered face on the photo ────────────────────────────────
+    def _ss_highlight_face(self, box):
+        """Ring the face at box on the editor canvas while its thumbnail is
+        hovered.  Draws nothing unless the photo on show really is this
+        record's, unedited and loaded -- the logged boxes are in the original
+        photo's coordinates, which a crop or rotate would invalidate."""
+        self._ss_clear_face_highlight()
+        if self._ss_review_frame is None or not self._ss_records:
+            return
+        rec = self._ss_records[self._ss_rec_index]
+        img = self._current_image_dict
+        if (img is None or self._viewer_image is None
+                or self._photo_display_rect is None
+                or self._edit_history                       # edited: mapping is stale
+                or img.get("id") != rec.get("photo id")
+                or not (isinstance(box, (list, tuple)) and len(box) == 4)):
+            return
+        try:
+            circle = _ss_face_circle_on_canvas(
+                box, (img.get("width") or 0, img.get("height") or 0),
+                self._photo_display_rect)
+        except (TypeError, ValueError):
+            circle = None
+        if circle is None:
+            logger.debug(f"Face box {box} does not fit photo "
+                         f'{img.get("width")}x{img.get("height")} -- not ringed')
+            return
+        # A dark ring under a bright one, so it shows against any photograph
+        self._ss_face_hl_ids = [
+            self.canvas.create_oval(*circle, outline="#000000", width=5),
+            self.canvas.create_oval(*circle, outline="#00FF40", width=2)]
+
+    def _ss_clear_face_highlight(self, _event=None):
+        for item in self._ss_face_hl_ids:
+            try:
+                self.canvas.delete(item)
+            except Exception:
+                pass                        # canvas already gone (mode exited)
+        self._ss_face_hl_ids = []
 
     def _ss_step(self, delta: int):
         new = self._ss_rec_index + delta
