@@ -2175,6 +2175,11 @@ class PhotosEditor:
                       anchor="w", justify="left").grid(row=row, column=1, sticky="w")
             self._ss_field_vars[key] = var
 
+        ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
+        self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
+                                        state="disabled", font=("TkDefaultFont", 10))
+        self._ss_comment_text.pack(fill="x")
+
         ttk.Label(parent, text="Faces").pack(anchor="w", pady=(10, 2))
         holder = ttk.Frame(parent)
         holder.pack(fill="both", expand=True)
@@ -2198,11 +2203,6 @@ class PhotosEditor:
         canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
         self._ss_faces_canvas = canvas
         self._ss_faces_frame  = inner
-
-        ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
-        self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
-                                        state="disabled", font=("TkDefaultFont", 10))
-        self._ss_comment_text.pack(fill="x")
 
         nav = ttk.Frame(parent)
         nav.pack(pady=10)
