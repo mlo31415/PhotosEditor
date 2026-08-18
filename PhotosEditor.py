@@ -24,7 +24,7 @@ import atexit
 import time
 import xml.etree.ElementTree as ET
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, font as tkfont
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
@@ -205,6 +205,9 @@ def _format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 SS_LOG_GLOB  = "SlideShow Output *.json"
 SS_DONE_FILE = _SCRIPT_DIR / "PhotosEditor SS Review Done.json"
+# Record fields the SS user typed (shown bold); the rest SS derived for itself
+_SS_USER_TYPED_FIELDS = {"photo date"}      # "editor" heads the panel, "comment"
+                                            # and the face names have their own widgets
 
 
 def _read_ss_records(path: Path) -> list[dict]:
@@ -2157,10 +2160,20 @@ class PhotosEditor:
         ttk.Label(parent, textvariable=self._ss_pos_var,
                   font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
 
+        # Everything the SS user typed is shown bold; labels and anything SS
+        # derived for itself (times, album path, file names) stay plain.
+        bold = tkfont.nametofont("TkDefaultFont").copy()
+        bold.configure(weight="bold")
+        self._ss_bold_font = bold
+
         # Whoever proposed these corrections -- SlideShow's "editor" -- heads the record
+        source_row = ttk.Frame(parent)
+        source_row.pack(anchor="w", pady=(8, 0))
+        ttk.Label(source_row, text="Input from:",
+                  font=("TkDefaultFont", 11)).pack(side="left")
         self._ss_source_var = tk.StringVar()
-        ttk.Label(parent, textvariable=self._ss_source_var,
-                  font=("TkDefaultFont", 11, "bold")).pack(anchor="w", pady=(8, 0))
+        ttk.Label(source_row, textvariable=self._ss_source_var,
+                  font=("TkDefaultFont", 11, "bold")).pack(side="left", padx=(5, 0))
 
         info = ttk.Frame(parent)
         info.pack(fill="x", pady=(6, 0))
@@ -2171,13 +2184,17 @@ class PhotosEditor:
             ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
                                                    sticky="nw", padx=(0, 6))
             var = tk.StringVar()
-            ttk.Label(info, textvariable=var, wraplength=380,
-                      anchor="w", justify="left").grid(row=row, column=1, sticky="w")
+            opts = {"textvariable": var, "wraplength": 380,
+                    "anchor": "w", "justify": "left"}
+            if key in _SS_USER_TYPED_FIELDS:
+                opts["font"] = bold
+            ttk.Label(info, **opts).grid(row=row, column=1, sticky="w")
             self._ss_field_vars[key] = var
 
         ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
         self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
-                                        state="disabled", font=("TkDefaultFont", 10))
+                                        state="disabled",
+                                        font=("TkDefaultFont", 10, "bold"))
         self._ss_comment_text.pack(fill="x")
 
         ttk.Label(parent, text="Faces").pack(anchor="w", pady=(10, 2))
@@ -2232,7 +2249,7 @@ class PhotosEditor:
                     f"on this photo")
         self._ss_pos_var.set(pos)
         self._ss_source_var.set(
-            f"Input from: {str(rec.get('editor') or '').strip() or '(unknown)'}")
+            str(rec.get("editor") or "").strip() or "(unknown)")
         for key, var in self._ss_field_vars.items():
             var.set(str(rec.get(key) or ""))
         self._ss_comment_text.config(state="normal")
@@ -2268,7 +2285,8 @@ class PhotosEditor:
             tk.Label(self._ss_faces_frame,
                      text=name if name else "(unnamed)", bg=bg,
                      fg="black" if name else "gray",
-                     font=("TkDefaultFont", 11)).grid(row=i, column=2, sticky="w")
+                     font=("TkDefaultFont", 11, "bold") if name
+                     else ("TkDefaultFont", 11)).grid(row=i, column=2, sticky="w")
         self._ss_faces_frame.update_idletasks()
         self._ss_faces_canvas.configure(
             scrollregion=self._ss_faces_canvas.bbox("all") or (0, 0, 0, 0))
