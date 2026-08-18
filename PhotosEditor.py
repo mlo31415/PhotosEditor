@@ -806,6 +806,7 @@ class PhotosEditor:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", self._on_f5_refresh)
+        self.root.bind("<Escape>", lambda e: self._on_close())  # same as the Exit button
         self.root.bind("<Control-z>", self._on_ctrl_z)
         self._ctrl_held: bool = False
         self.root.bind("<KeyPress-Control_L>",   lambda e: setattr(self, '_ctrl_held', True),  add="+")
@@ -1018,7 +1019,7 @@ class PhotosEditor:
         self.canvas.bind("<Button-1>",         self._on_crop_start)
         self.canvas.bind("<B1-Motion>",        self._on_crop_drag)
         self.canvas.bind("<ButtonRelease-1>",  self._on_crop_release)
-        self.canvas.bind("<Escape>",           self._clear_crop_rect)
+        self.canvas.bind("<Escape>",           self._on_canvas_escape)
 
         def _enforce_canvas_min_width(event):
             min_w = int(event.width * 0.60)
@@ -3600,6 +3601,15 @@ class PhotosEditor:
             outline="red", width=2)
         self.crop_btn.config(state="normal")
         self.set_status("Crop region selected — click Crop to apply, Esc to cancel.")
+
+    def _on_canvas_escape(self, _event=None):
+        """Esc over the photo cancels a crop rectangle if one is up, and stops
+        there.  With no crop pending it falls through to the window binding,
+        which does what the Exit button does."""
+        if self._crop_rect_id is None:
+            return None
+        self._clear_crop_rect()
+        return "break"
 
     def _clear_crop_rect(self, _event=None):
         """Delete the on-canvas crop rectangle and reset drag state."""
