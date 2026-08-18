@@ -22,6 +22,7 @@ import logging
 import warnings
 import atexit
 import time
+import hashlib
 import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, font as tkfont
@@ -227,8 +228,32 @@ def _read_ss_records(path: Path) -> list[dict]:
 
 
 def _ss_record_key(rec: dict) -> str:
-    """Stable identity of one SS record, for the done-list."""
+    """Stable identity of one SS record, for the done-list: the photo, the save
+    time, and a short digest of the record's own content.
+
+    The digest separates records the photo and second alone would collide --
+    two identifications of one photo saved within the same second, or records
+    carrying no photo id at all.  Content is used rather than the log's file
+    name because SlideShow renames its log on every save, so a name-based key
+    would shift under the reviewer and re-offer records already dealt with.
+    Keys beginning "_" are PE's own annotations (the log file name) and are
+    left out, so a record's key is the same before and after it is annotated.
+    """
+    body = {k: v for k, v in rec.items() if not k.startswith("_")}
+    digest = hashlib.sha1(
+        json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:8]
+    return f'{rec.get("photo id")}|{rec.get("saved", "")}|{digest}'
+
+
+def _ss_legacy_record_key(rec: dict) -> str:
+    """The key used before content digests; still honoured so that records
+    marked done under the old scheme stay done."""
     return f'{rec.get("photo id")}|{rec.get("saved", "")}'
+
+
+def _ss_is_done(rec: dict, done: set) -> bool:
+    return _ss_record_key(rec) in done or _ss_legacy_record_key(rec) in done
 
 
 def _collect_ss_records(directory: Path, done: set) -> list[dict]:
@@ -245,7 +270,7 @@ def _collect_ss_records(directory: Path, done: set) -> list[dict]:
             logger.warning(f"Could not parse SS log {path.name}: {e}")
             continue
         for rec in recs:
-            if _ss_record_key(rec) not in done:
+            if not _ss_is_done(rec, done):
                 rec["_log file"] = path.name
                 records.append(rec)
 
