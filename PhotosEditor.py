@@ -2178,22 +2178,24 @@ class PhotosEditor:
                   font=("TkDefaultFont", 11, "bold"),
                   foreground=_SS_USER_TEXT_FG).pack(side="left", padx=(5, 0))
 
+        self._ss_field_vars = {}
+
+        def add_field_rows(container, fields):
+            for row, (label, key) in enumerate(fields):
+                ttk.Label(container, text=f"{label}:").grid(row=row, column=0,
+                                                            sticky="nw", padx=(0, 6))
+                var = tk.StringVar()
+                opts = {"textvariable": var, "wraplength": 380,
+                        "anchor": "w", "justify": "left"}
+                if key in _SS_USER_TYPED_FIELDS:
+                    opts["font"]       = bold
+                    opts["foreground"] = _SS_USER_TEXT_FG
+                ttk.Label(container, **opts).grid(row=row, column=1, sticky="w")
+                self._ss_field_vars[key] = var
+
         info = ttk.Frame(parent)
         info.pack(fill="x", pady=(6, 0))
-        self._ss_field_vars = {}
-        for row, (label, key) in enumerate((("Saved", "saved"), ("Album", "album"),
-                                            ("Photo date", "photo date"),
-                                            ("Log", "_log file"))):
-            ttk.Label(info, text=f"{label}:").grid(row=row, column=0,
-                                                   sticky="nw", padx=(0, 6))
-            var = tk.StringVar()
-            opts = {"textvariable": var, "wraplength": 380,
-                    "anchor": "w", "justify": "left"}
-            if key in _SS_USER_TYPED_FIELDS:
-                opts["font"]       = bold
-                opts["foreground"] = _SS_USER_TEXT_FG
-            ttk.Label(info, **opts).grid(row=row, column=1, sticky="w")
-            self._ss_field_vars[key] = var
+        add_field_rows(info, (("Album", "album"), ("Photo date", "photo date")))
 
         ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
         self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
@@ -2237,6 +2239,11 @@ class PhotosEditor:
         self._ss_prev_btn.pack(side="left", padx=4)
         self._ss_next_btn.pack(side="left", padx=4)
         self._ss_done_btn.pack(side="left", padx=(16, 4))
+
+        # Bookkeeping -- where the record came from -- sits out of the way at the foot
+        footer = ttk.Frame(parent)
+        footer.pack(fill="x", pady=(6, 0))
+        add_field_rows(footer, (("Saved", "saved"), ("Log", "_log file")))
 
     def _show_ss_record(self):
         rec = self._ss_records[self._ss_rec_index]
