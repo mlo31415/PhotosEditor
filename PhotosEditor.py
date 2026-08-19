@@ -3825,7 +3825,12 @@ class PhotosEditor:
                 # started -- resize_to is None unless the answer was to reduce
                 if resize_to is not None:
                     img = img.resize(resize_to, Image.Resampling.LANCZOS)
-                img.save(temp_path, format='JPEG', quality=92)
+                # A pixel edit has to re-encode, so this is the archive master
+                # being rewritten: 95 is the practical ceiling (PIL advises
+                # against going higher, and the gain past it is slight against
+                # a steep size rise).  subsampling=0 keeps full colour
+                # resolution -- PIL would otherwise halve chroma at any quality.
+                img.save(temp_path, format='JPEG', quality=95, subsampling=0)
 
                 client = AlbumHierarchy.PiwigoClient(
                     creds['url'], creds['username'], creds['password'],
