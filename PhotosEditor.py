@@ -205,6 +205,9 @@ def _format_duration(secs: float) -> str:
 # SlideShow output-log support (Review SS Comments mode)
 # ---------------------------------------------------------------------------
 SS_LOG_GLOB  = "SlideShow Output *.json"
+# A log whose every record is done is renamed with this prefix, which also
+# takes it out of SS_LOG_GLOB and so out of the review scan
+SS_COMPLETED_PREFIX = "Completed - "
 # Record fields the SS user typed (shown bold red); the rest SS derived for itself
 _SS_USER_TYPED_FIELDS = {"photo date"}      # "editor" heads the panel, "comment"
                                             # and the face names have their own widgets
@@ -264,13 +267,37 @@ def _ss_write_records(path: Path, records: list[dict]) -> None:
     tmp.replace(path)
 
 
-def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> bool:
+def _ss_rename_completed_log(path: Path) -> "Path | None":
+    """Prefix a log whose every record is done, which also takes it out of
+    SS_LOG_GLOB and so out of the review scan.  Returns the new path, or None
+    if it was left alone."""
+    if path.name.startswith(SS_COMPLETED_PREFIX):
+        return None                             # already carries the prefix
+    target = path.with_name(SS_COMPLETED_PREFIX + path.name)
+    n = 2
+    while target.exists():                      # never overwrite another log
+        target = path.with_name(
+            f"{SS_COMPLETED_PREFIX}{path.stem} ({n}){path.suffix}")
+        n += 1
+    try:
+        path.rename(target)
+        return target
+    except OSError as e:
+        logger.warning(f"Could not rename completed log {path.name}: {e}")
+        return None
+
+
+def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> tuple:
     """Record that rec has been reviewed, in the log that holds it.
 
     The log is re-read before it is rewritten, so anything SlideShow appended
     since it was loaded survives; and because SlideShow renames its log on
     every save, the whole folder is searched when the expected name is gone.
-    Returns False if the record could not be found anywhere.
+    A log left with every record done is renamed with SS_COMPLETED_PREFIX.
+
+    Returns (found, completed_path): found is False if the record could not be
+    located anywhere, completed_path the log's new name if this mark finished
+    it off, else None.
     """
     key = _ss_record_key(rec)
     named = rec.get("_log file")
@@ -289,8 +316,10 @@ def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> bool:
             if _ss_record_key(r) == key:
                 r["done"] = True
                 _ss_write_records(path, recs)
-                return True
-    return False
+                completed = (_ss_rename_completed_log(path)
+                             if all(x.get("done") for x in recs) else None)
+                return True, completed
+    return False, None
 
 
 def _collect_ss_records(directory: Path) -> list[dict]:
@@ -2446,8 +2475,9 @@ class PhotosEditor:
         if not self._ss_confirm_discard():
             return
         rec = self._ss_records[self._ss_rec_index]
-        if not _ss_mark_record_done_in_log(
-                Path(self._state.get("ss_review_dir", "")), rec):
+        found, completed = _ss_mark_record_done_in_log(
+            Path(self._state.get("ss_review_dir", "")), rec)
+        if not found:
             messagebox.showwarning(
                 "Review SS Comments",
                 "This record could not be found in the SlideShow logs, so it "
@@ -2464,6 +2494,8 @@ class PhotosEditor:
             return
         self._ss_rec_index = min(self._ss_rec_index, len(self._ss_records) - 1)
         self._show_ss_record()
+        if completed is not None:       # after _show_ss_record, which sets status
+            self.set_status(f'Log finished — renamed "{completed.name}".')
 
     def _ss_worker_load_photo(self, rec: dict, photo_id: int, gen: int):
         """Fetch the record's photo info (for the editor) and, when the record
