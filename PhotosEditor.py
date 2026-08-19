@@ -855,6 +855,7 @@ class PhotosEditor:
         self._viewer_image:        Image.Image | None = None
         self._viewer_tk:           ImageTk.PhotoImage | None = None
         self._current_image_dict:  dict | None = None
+        self._loaded_fields:       dict = {}   # custom fields as the photo loaded
         self._caption_editor_open: bool  = False
         self._photo_edited:        bool  = False  # unsaved edits since last load/upload
         self._crop_start:          tuple | None = None
@@ -2336,11 +2337,12 @@ class PhotosEditor:
                                        command=lambda: self._ss_step(-1))
         self._ss_next_btn = ttk.Button(nav, text="Next ▶",
                                        command=lambda: self._ss_step(+1))
-        self._ss_done_btn = ttk.Button(nav, text="Mark Done",
-                                       command=self._ss_mark_done)
+        self._ss_skip_btn = ttk.Button(
+            nav, text="Skip",
+            command=lambda: self._ss_mark_done(discard_fields=True))
         self._ss_prev_btn.pack(side="left", padx=4)
         self._ss_next_btn.pack(side="left", padx=4)
-        self._ss_done_btn.pack(side="left", padx=(16, 4))
+        self._ss_skip_btn.pack(side="left", padx=(16, 4))
 
         # Bookkeeping -- where the record came from -- sits out of the way at the foot
         footer = ttk.Frame(parent)
@@ -2473,7 +2475,14 @@ class PhotosEditor:
         self._ss_rec_index = new
         self._show_ss_record()
 
-    def _ss_mark_done(self):
+    def _ss_mark_done(self, discard_fields: bool = False):
+        """Mark the record under review done and move to the next.
+
+        discard_fields is set by Skip: whatever was typed into the editor is
+        thrown away rather than remembered, so it cannot reappear when this
+        photo turns up in another record.  An upload leaves the fields alone --
+        they are what was just saved to Piwigo.
+        """
         if not self._ss_confirm_discard():
             return
         rec = self._ss_records[self._ss_rec_index]
@@ -2487,6 +2496,12 @@ class PhotosEditor:
                 "rewritten while the review was open?", parent=self.root)
             return
         rec["done"] = True
+        if discard_fields:
+            # _ss_confirm_discard has just stashed the typed fields against this
+            # photo; skipping means they were not wanted, so drop them and wipe
+            # the editor (which _show_ss_record would only do if a record remains)
+            self.custom_data.pop((self._current_image_dict or {}).get("id"), None)
+            self._clear_editor()
         del self._ss_records[self._ss_rec_index]
         if not self._ss_records:
             messagebox.showinfo("Review SS Comments",
@@ -3493,6 +3508,9 @@ class PhotosEditor:
         self.rotate_left_btn.config(state="normal")
         self.rotate_180_btn.config(state="normal")
         self.revert_btn.config(state="normal")
+        # Remember the fields as loaded, so an upload that changes nothing can
+        # be recognised and queried
+        self._loaded_fields = self._editor_field_values()
         self.set_status(f"Loaded: {name}")
 
     _IRFANVIEW_PATHS = [
@@ -3538,6 +3556,20 @@ class PhotosEditor:
         img_dict = self._current_image_dict
         image_id = img_dict.get("id")
         fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
+
+        # Uploading an untouched photo re-encodes it and rewrites its metadata for
+        # no gain, so make sure that is really what was meant.  (Only for a photo
+        # that came from Piwigo -- a new one has nothing to compare against.)
+        if (image_id is not None and not self._photo_edited and self._loaded_fields
+                and self._editor_field_values() == self._loaded_fields):
+            if not messagebox.askyesno(
+                    "Nothing Changed",
+                    f'Nothing has been changed on "{fname}" -- the photo has not '
+                    "been edited and no field has been altered.\n\n"
+                    "Upload it to Piwigo anyway?",
+                    icon="question", parent=self.root):
+                self.set_status("Upload cancelled -- nothing had been changed.")
+                return
 
         # Reviewing SS comments, the main window's album selection has nothing to
         # do with the photo on screen, so upload into an album the photo is
@@ -4207,10 +4239,17 @@ class PhotosEditor:
                 data[key] = widget.get()
         self.custom_data[image_id] = data
 
+    def _editor_field_values(self) -> dict:
+        """The custom fields as they stand, for comparing against what loaded."""
+        return {key: (widget.get('1.0', 'end').strip()
+                      if isinstance(widget, tk.Text) else widget.get().strip())
+                for key, widget in self.custom_vars.items()}
+
     def _clear_editor(self):
         self._viewer_image       = None
         self._viewer_tk          = None
         self._current_image_dict = None
+        self._loaded_fields      = {}
         self._exif_data          = {}
         self.photo_label_var.set("No photo selected")
         self.photo_dim_var.set("")
