@@ -1052,6 +1052,8 @@ class PhotosEditor:
         self._on_thumb_click(img_dict)
 
     def _close_editor_dialog(self):
+        if self._editor_dlg is None or not self._editor_dlg.winfo_exists():
+            return      # embedded in the review split screen -- no dialog to close
         self._save_current_custom_fields()
         if self._photo_edited:
             name = (self._current_image_dict or {}).get("file") or \
@@ -3532,13 +3534,24 @@ class PhotosEditor:
         if self._viewer_image is None or self._current_image_dict is None:
             self.set_status("No photo loaded.")
             return
-        if self.current_album_id is None:
-            messagebox.showerror("No Album", "No source album is selected.", parent=self.root)
-            return
 
         img_dict = self._current_image_dict
         image_id = img_dict.get("id")
         fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
+
+        # Reviewing SS comments, the main window's album selection has nothing to
+        # do with the photo on screen, so upload into an album the photo is
+        # already in rather than filing it somewhere unrelated.
+        upload_album_id   = self.current_album_id
+        upload_album_name = self.current_album_name
+        if self._ss_review_frame is not None:
+            cats = img_dict.get("categories") or []
+            if cats and cats[0].get("id") is not None:
+                upload_album_id   = int(cats[0]["id"])
+                upload_album_name = cats[0].get("name") or str(upload_album_id)
+        if upload_album_id is None:
+            messagebox.showerror("No Album", "No source album is selected.", parent=self.root)
+            return
 
         # Gather metadata from custom fields
         author       = self.custom_vars['photo_source'].get().strip()
@@ -3556,14 +3569,14 @@ class PhotosEditor:
         set_stage, _advance, close_dlg = self._make_progress_dialog(
             title="Uploading…",
             heading=f"Uploading  {fname}",
-            subheading=f"to  \"{self.current_album_name}\"",
+            subheading=f"to  \"{upload_album_name}\"",
             total=0,
             initial_stage="Preparing…",
             grab=True)
 
         # Snapshot the edited image now, before the thread starts
         pil_snapshot = self._viewer_image.copy()
-        album_id     = self.current_album_id
+        album_id     = upload_album_id
         image_id     = img_dict.get("id")   # None for brand-new uploads
 
         def worker():
@@ -3636,7 +3649,12 @@ class PhotosEditor:
                     self._photo_edited = False
                     self._refresh_current_thumbnail()
                     self.set_status(f"Uploaded: {fname}")
-                    self._close_editor_dialog()
+                    if self._ss_review_frame is not None:
+                        # Uploading is the reviewer acting on the record: that
+                        # settles it, so mark it done and move on
+                        self._ss_mark_done()
+                    else:
+                        self._close_editor_dialog()
                 self.root.after(0, finish_ok)
 
             except Exception as e:
