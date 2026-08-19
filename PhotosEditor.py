@@ -1323,8 +1323,8 @@ class PhotosEditor:
     # ── Maximised state ──────────────────────────────────────────────────────
     # Tk reports a maximised window's geometry as its maximised size, and setting
     # that size back only makes a normal window that happens to fill the screen.
-    # So the maximised-ness is saved separately, and the un-maximised geometry is
-    # kept up to date as the window is moved and resized.
+    # So the maximised-ness is saved separately, and _on_close un-maximises the
+    # window just before exit to read the size it would restore to.
     @staticmethod
     def _is_zoomed(win) -> bool:
         try:
@@ -3013,7 +3013,6 @@ class PhotosEditor:
     @staticmethod
     def _adjust_tree_count(tree, album_id: int, delta: int):
         """Walk album_id and all its ancestors in tree, adjusting the displayed count by delta."""
-        import re
         iid = str(album_id)
         while iid and tree.exists(iid):
             text = tree.item(iid, "text")
