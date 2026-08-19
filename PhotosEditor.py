@@ -3641,11 +3641,21 @@ class PhotosEditor:
             if parsed:
                 date_creation = parsed.strftime('%Y-%m-%d %H:%M:%S')
 
+        # Was the picture itself changed, or only the words about it?  Rotate,
+        # crop and the restoration sliders all set _photo_edited; typing in the
+        # fields does not.  Sending the file back replaces the original on
+        # Piwigo with what the editor is holding -- which is a *derivative*, so
+        # for an unedited photo that would trade the original away for nothing.
+        pixels_edited = self._photo_edited
+        metadata_only = (image_id is not None and not pixels_edited)
+
         # Progress dialog
         set_stage, _advance, close_dlg = self._make_progress_dialog(
-            title="Uploading…",
-            heading=f"Uploading  {fname}",
-            subheading=f"to  \"{upload_album_name}\"",
+            title="Saving…" if metadata_only else "Uploading…",
+            heading=(f"Saving details of  {fname}" if metadata_only
+                     else f"Uploading  {fname}"),
+            subheading=("the photo itself is unchanged"
+                        if metadata_only else f"to  \"{upload_album_name}\""),
             total=0,
             initial_stage="Preparing…",
             grab=True)
@@ -3653,13 +3663,53 @@ class PhotosEditor:
         # Snapshot the edited image now, before the thread starts
         pil_snapshot = self._viewer_image.copy()
         album_id     = upload_album_id
-        image_id     = img_dict.get("id")   # None for brand-new uploads
+
+        def finish_ok(uploaded_file: bool):
+            close_dlg()
+            self._photo_edited  = False
+            self._loaded_fields = self._editor_field_values()   # this is the new baseline
+            if uploaded_file:
+                self._refresh_current_thumbnail()
+            self.set_status(f"Uploaded: {fname}" if uploaded_file
+                            else f"Saved details of {fname} (photo not re-uploaded)")
+            if self._ss_review_frame is not None:
+                # Saving is the reviewer acting on the record: that settles it,
+                # so mark it done and move on
+                self._ss_mark_done()
+            else:
+                self._close_editor_dialog()
 
         def worker():
             temp_path = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
+
+                if metadata_only:
+                    client = AlbumHierarchy.PiwigoClient(
+                        creds['url'], creds['username'], creds['password'],
+                        verify_ssl=creds.get('verify_ssl', True),
+                        rate_limit_calls_per_second=params.get('rate_limit_calls_per_second', 2.0))
+                    set_stage("Logging in…")
+                    client.login(creds['username'], creds['password'])
+                    try:
+                        tag_names = [t.strip() for t in tags.split(',') if t.strip()]
+                        set_stage("Matching tags…")
+                        tag_ids = client.resolve_tag_ids(tag_names)
+                        set_stage("Saving details…")
+                        # "" clears a field, so pass every one the editor shows
+                        client.set_image_info(
+                            image_id,
+                            author=author, comment=comment,
+                            date_creation=date_creation, tag_ids=tag_ids)
+                    finally:
+                        try:
+                            client.logout()
+                        except Exception:
+                            pass
+                    set_stage("Done.")
+                    self.root.after(0, lambda: finish_ok(uploaded_file=False))
+                    return
 
                 # Save edited PIL image to a temp JPEG
                 set_stage("Saving edited image…")
@@ -3720,18 +3770,7 @@ class PhotosEditor:
                 client.logout()
                 set_stage("Done.")
 
-                def finish_ok():
-                    close_dlg()
-                    self._photo_edited = False
-                    self._refresh_current_thumbnail()
-                    self.set_status(f"Uploaded: {fname}")
-                    if self._ss_review_frame is not None:
-                        # Uploading is the reviewer acting on the record: that
-                        # settles it, so mark it done and move on
-                        self._ss_mark_done()
-                    else:
-                        self._close_editor_dialog()
-                self.root.after(0, finish_ok)
+                self.root.after(0, lambda: finish_ok(uploaded_file=True))
 
             except Exception as e:
                 logger.exception("Upload failed")
