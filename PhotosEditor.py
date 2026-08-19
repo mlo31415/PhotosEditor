@@ -1290,9 +1290,18 @@ class PhotosEditor:
         geo = self._state.get("geometry", "")
         if geo:
             try:
-                self.root.geometry(_geometry_on_screen(self.root, geo))   # never restore onto a monitor that's gone
+                geo = _geometry_on_screen(self.root, geo)   # never restore onto a monitor that's gone
+                self.root.geometry(geo)
+                # Let the size take effect before any maximising below, so that
+                # Windows records it as the rectangle to restore to; without this
+                # un-maximising lands the window at an arbitrary cascade position
+                self.root.update_idletasks()
             except Exception:
                 pass
+        # Restore maximised-ness after the size, so that un-maximising later
+        # gives back the saved window rather than something arbitrary
+        if self._state.get("zoomed"):
+            self.root.after(0, lambda: self._set_zoomed(True))
         sash_frac = self._state.get("sash_frac", None)
         if sash_frac is not None:
             self._unzoomed_sash_frac = float(sash_frac)
@@ -1310,6 +1319,34 @@ class PhotosEditor:
         if target_id is not None:
             self._saved_target_album_id   = target_id
             self._saved_target_album_name = target_name
+
+    # ── Maximised state ──────────────────────────────────────────────────────
+    # Tk reports a maximised window's geometry as its maximised size, and setting
+    # that size back only makes a normal window that happens to fill the screen.
+    # So the maximised-ness is saved separately, and the un-maximised geometry is
+    # kept up to date as the window is moved and resized.
+    @staticmethod
+    def _is_zoomed(win) -> bool:
+        try:
+            if win.state() == "zoomed":                  # Windows
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(win.attributes("-zoomed"))       # X11
+        except Exception:
+            return False
+
+    def _set_zoomed(self, on: bool):
+        try:
+            self.root.state("zoomed" if on else "normal")
+            return
+        except Exception:
+            pass
+        try:
+            self.root.attributes("-zoomed", on)
+        except Exception:
+            pass
 
     def _min_sash_px(self) -> int:
         """Minimum pixel width for any panel: max(10% of app width, 150 px)."""
@@ -1371,6 +1408,14 @@ class PhotosEditor:
         # Capture editor dialog size/position even if closed via app exit
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             state["editor_geometry"] = self._editor_dlg.geometry()
+        # Save whether the window was maximised, and the size it would return to.
+        # Tk reports a maximised window's geometry as its maximised size, so the
+        # window is un-maximised first to read the size it would restore to --
+        # invisible, since it is about to be destroyed.
+        state["zoomed"] = self._is_zoomed(self.root)
+        if state["zoomed"]:
+            self._set_zoomed(False)
+            self.root.update_idletasks()
         state["geometry"] = self.root.geometry()
         # Always save the unzoomed sash as a fraction so it survives window resizes
         try:
