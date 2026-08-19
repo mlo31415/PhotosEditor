@@ -205,7 +205,6 @@ def _format_duration(secs: float) -> str:
 # SlideShow output-log support (Review SS Comments mode)
 # ---------------------------------------------------------------------------
 SS_LOG_GLOB  = "SlideShow Output *.json"
-SS_DONE_FILE = _SCRIPT_DIR / "PhotosEditor SS Review Done.json"
 # Record fields the SS user typed (shown bold red); the rest SS derived for itself
 _SS_USER_TYPED_FIELDS = {"photo date"}      # "editor" heads the panel, "comment"
                                             # and the face names have their own widgets
@@ -246,16 +245,6 @@ def _ss_record_key(rec: dict) -> str:
         json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:8]
     return f'{rec.get("photo id")}|{rec.get("saved", "")}|{digest}'
-
-
-def _ss_legacy_record_key(rec: dict) -> str:
-    """The key used before content digests; still honoured so that records
-    marked done under the old scheme stay done."""
-    return f'{rec.get("photo id")}|{rec.get("saved", "")}'
-
-
-def _ss_is_done(rec: dict, done: set) -> bool:
-    return _ss_record_key(rec) in done or _ss_legacy_record_key(rec) in done
 
 
 def _ss_write_records(path: Path, records: list[dict]) -> None:
@@ -304,12 +293,13 @@ def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> bool:
     return False
 
 
-def _collect_ss_records(directory: Path, done: set) -> list[dict]:
-    """Every unreviewed record from every SlideShow log in directory, ordered so
-    that photos carrying more than one record come first, each photo's records
-    adjacent, followed by the photos with a single record.  Groups and records
-    keep the order they were met in (log files oldest first, since their names
-    carry the date).  Each record gains a "_log file" key naming its log."""
+def _collect_ss_records(directory: Path) -> list[dict]:
+    """Every record not yet marked done, from every SlideShow log in directory,
+    ordered so that photos carrying more than one record come first, each
+    photo's records adjacent, followed by the photos with a single record.
+    Groups and records keep the order they were met in (log files oldest first,
+    since their names carry the date).  Each record gains a "_log file" key
+    naming its log."""
     records: list[dict] = []
     for path in sorted(directory.glob(SS_LOG_GLOB)):
         try:
@@ -318,9 +308,7 @@ def _collect_ss_records(directory: Path, done: set) -> list[dict]:
             logger.warning(f"Could not parse SS log {path.name}: {e}")
             continue
         for rec in recs:
-            # "done" lives in the record itself; the separate done-list is only
-            # still consulted so records marked before the move stay marked
-            if rec.get("done") or _ss_is_done(rec, done):
+            if rec.get("done"):
                 continue
             rec["_log file"] = path.name
             records.append(rec)
@@ -333,19 +321,6 @@ def _collect_ss_records(directory: Path, done: set) -> list[dict]:
     groups = list(by_photo.values())
     return ([rec for g in groups if len(g) > 1 for rec in g] +
             [rec for g in groups if len(g) == 1 for rec in g])
-
-
-def _load_ss_done() -> set:
-    """The keys of records marked done before the flag moved into the log
-    itself.  Read only -- PE no longer writes this file, but keeps honouring it
-    so that nothing already reviewed comes back."""
-    try:
-        if SS_DONE_FILE.exists():
-            with open(SS_DONE_FILE, encoding="utf-8") as f:
-                return set(json.load(f).get("done", []))
-    except Exception:
-        pass
-    return set()
 
 
 def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64) -> "ImageTk.PhotoImage":
@@ -894,7 +869,6 @@ class PhotosEditor:
         self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
         self._ss_records:      list = []    # unreviewed records, multi-record photos first
         self._ss_rec_index:    int  = 0
-        self._ss_done:         set  = set()
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
@@ -2149,7 +2123,6 @@ class PhotosEditor:
     def _enter_ss_review(self):
         # The SS output directory is configured once and remembered in State.json --
         # but only once it has actually yielded records, so a wrong pick can be redone
-        self._ss_done = _load_ss_done()
         d = self._state.get("ss_review_dir", "")
         while True:
             if not d or not Path(d).is_dir():
@@ -2159,7 +2132,7 @@ class PhotosEditor:
                 if not d:
                     return
             # Every log in the folder, photos with several records first
-            records = _collect_ss_records(Path(d), self._ss_done)
+            records = _collect_ss_records(Path(d))
             if records:
                 break
             if not messagebox.askyesno(
