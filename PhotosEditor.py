@@ -102,7 +102,11 @@ CUSTOM_FIELDS = [
     ('tags',            'Tags'),
 ]
 
-VIEWER_FETCH_SIZE  = "medium"        # Piwigo derivative used in the editor canvas
+# The editor loads the ORIGINAL, since saving an edit sends the editor's image
+# back in place of it; a derivative would silently downsize the photo.  These
+# sizes are only the fallback for a photo with no element_url, largest first.
+VIEWER_FALLBACK_SIZES = ("xxlarge", "xlarge", "large", "medium", "small",
+                         "2small", "thumb")
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 
 def _truncate(text: str, max_len: int) -> str:
@@ -856,6 +860,7 @@ class PhotosEditor:
         self._viewer_tk:           ImageTk.PhotoImage | None = None
         self._current_image_dict:  dict | None = None
         self._loaded_fields:       dict = {}   # custom fields as the photo loaded
+        self._loaded_full_size:    bool = True # False if only a derivative loaded
         self._caption_editor_open: bool  = False
         self._photo_edited:        bool  = False  # unsaved edits since last load/upload
         self._crop_start:          tuple | None = None
@@ -3469,11 +3474,12 @@ class PhotosEditor:
     def _on_thumb_click(self, img_dict: dict):
         self._save_current_custom_fields()
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
-        url  = _pick_derivative_url(img_dict,
-                                    (VIEWER_FETCH_SIZE, "large", "small",
-                                     "2small", "thumb"))
+        # The original first: an edit is saved by sending this image back in
+        # place of the original, so editing a derivative would downsize the
+        # photo.  About 300 KB and 0.06 s dearer than the medium derivative.
+        url = img_dict.get("element_url") or ""
         if not url:
-            url = img_dict.get("element_url", "")
+            url = _pick_derivative_url(img_dict, VIEWER_FALLBACK_SIZES)
         if not url:
             self.set_status("No URL available for this photo.")
             return
@@ -3552,6 +3558,18 @@ class PhotosEditor:
         self.rotate_left_btn.config(state="normal")
         self.rotate_180_btn.config(state="normal")
         self.revert_btn.config(state="normal")
+        # Did we get the whole photo?  Piwigo reports the original's size in the
+        # info dict, so this is free.  Recorded at load because a later crop
+        # legitimately makes the image smaller than the original.
+        try:
+            ow, oh = int(img_dict.get("width") or 0), int(img_dict.get("height") or 0)
+        except (TypeError, ValueError):
+            ow = oh = 0
+        self._loaded_full_size = (not (ow and oh)
+                                  or (pil.width >= ow and pil.height >= oh))
+        if not self._loaded_full_size:
+            logger.warning(f"Editor holding {pil.width}x{pil.height} of a "
+                           f"{ow}x{oh} original for image {img_dict.get('id')}")
         # Remember the fields as loaded, so an upload that changes nothing can
         # be recognised and queried
         self._loaded_fields = self._editor_field_values()
@@ -3648,6 +3666,24 @@ class PhotosEditor:
         # for an unedited photo that would trade the original away for nothing.
         pixels_edited = self._photo_edited
         metadata_only = (image_id is not None and not pixels_edited)
+
+        # Belt and braces for PE-1: the editor loads the original, so this should
+        # never fire -- but if it ever holds only a derivative (no element_url,
+        # say) then sending it back would replace the original with a smaller
+        # copy.  Say so rather than doing it quietly.
+        if pixels_edited and image_id is not None and not self._loaded_full_size:
+            ow, oh = img_dict.get("width"), img_dict.get("height")
+            vw, vh = self._viewer_image.size
+            if not messagebox.askyesno(
+                    "Photo Would Be Downsized",
+                    f'Only a reduced copy of "{fname}" could be loaded '
+                    f"({vw}×{vh}); the original on Piwigo is "
+                    f"{ow}×{oh}.\n\nUploading now would replace the original "
+                    "with the smaller copy, and the full-size photo would be "
+                    "lost.\n\nUpload anyway?",
+                    icon="warning", parent=self.root):
+                self.set_status("Upload cancelled — only a reduced copy was loaded.")
+                return
 
         # Progress dialog
         set_stage, _advance, close_dlg = self._make_progress_dialog(
@@ -4333,6 +4369,7 @@ class PhotosEditor:
         self._viewer_tk          = None
         self._current_image_dict = None
         self._loaded_fields      = {}
+        self._loaded_full_size   = True
         self._exif_data          = {}
         self.photo_label_var.set("No photo selected")
         self.photo_dim_var.set("")
