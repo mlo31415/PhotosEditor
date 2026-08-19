@@ -3609,6 +3609,59 @@ class PhotosEditor:
         except Exception as e:
             self.set_status(f"Could not open IrfanView: {e}")
 
+    @staticmethod
+    def _fit_within_pixels(w: int, h: int, max_pixels: int) -> tuple:
+        """The largest w×h-shaped size whose pixel count fits max_pixels."""
+        scale = (max_pixels / (w * h)) ** 0.5
+        return (max(1, int(w * scale)), max(1, int(h * scale)))
+
+    def _ask_oversize_upload(self, w: int, h: int, max_pixels: int) -> tuple:
+        """Photo is over the upload pixel limit: cancel, reduce, or send as is?
+
+        Returns (choice, resize_to) where choice is 'cancel', 'reduce' or
+        'full', and resize_to is the (w, h) to resize to for 'reduce', else None.
+        """
+        tw, th = self._fit_within_pixels(w, h, max_pixels)
+        result = {'choice': 'cancel', 'size': None}
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Photo Is Larger Than the Upload Limit")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: dlg.destroy())   # = cancel
+
+        body = ttk.Frame(dlg, padding=(18, 14, 18, 6))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="This photo is larger than the upload limit.",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(body, justify="left", padding=(0, 8, 0, 0),
+                  text=(f"Photo:  {w:,} × {h:,}  ({w * h / 1_000_000:.1f} megapixels)\n"
+                        f"Limit:  {max_pixels / 1_000_000:.1f} megapixels"
+                        f"  ({tw:,} × {th:,} at this shape)")).pack(anchor="w")
+
+        def choose(choice, size=None):
+            result['choice'], result['size'] = choice, size
+            dlg.destroy()
+
+        btns = ttk.Frame(dlg, padding=(18, 4, 18, 14))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Cancel upload",
+                   command=lambda: choose('cancel')).pack(side="left")
+        ttk.Button(btns, text=f"Reduce to {tw:,} × {th:,}",
+                   command=lambda: choose('reduce', (tw, th))).pack(side="left", padx=8)
+        ttk.Button(btns, text="Upload at full size",
+                   command=lambda: choose('full')).pack(side="left")
+
+        dlg.bind("<Escape>", lambda e: choose('cancel'))
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{rx + (rw - dw) // 2}+{ry + (rh - dh) // 2}")
+        dlg.wait_window()
+        return result['choice'], result['size']
+
     def _upload_current_photo(self):
         """Upload the current (possibly edited) photo back to Piwigo."""
         if self._viewer_image is None or self._current_image_dict is None:
@@ -3685,6 +3738,18 @@ class PhotosEditor:
                 self.set_status("Upload cancelled — only a reduced copy was loaded.")
                 return
 
+        # Over the configured pixel limit?  Ask rather than silently shrinking.
+        # Decided here, on the main thread, before the worker starts.
+        resize_to = None
+        if not metadata_only:
+            max_pixels = _store.load_op_params().get('max_upload_pixels')
+            w, h = self._viewer_image.size
+            if max_pixels and w * h > max_pixels:
+                choice, resize_to = self._ask_oversize_upload(w, h, int(max_pixels))
+                if choice == 'cancel':
+                    self.set_status("Upload cancelled.")
+                    return
+
         # Progress dialog
         set_stage, _advance, close_dlg = self._make_progress_dialog(
             title="Saving…" if metadata_only else "Uploading…",
@@ -3756,14 +3821,10 @@ class PhotosEditor:
                 img = pil_snapshot
                 if img.mode not in ('RGB', 'L'):
                     img = img.convert('RGB')
-                max_pixels = params.get('max_upload_pixels')
-                if max_pixels:
-                    w, h = img.size
-                    if w * h > max_pixels:
-                        scale = (max_pixels / (w * h)) ** 0.5
-                        img = img.resize(
-                            (max(1, int(w * scale)), max(1, int(h * scale))),
-                            Image.Resampling.LANCZOS)
+                # Over the pixel limit, the choice was made before this thread
+                # started -- resize_to is None unless the answer was to reduce
+                if resize_to is not None:
+                    img = img.resize(resize_to, Image.Resampling.LANCZOS)
                 img.save(temp_path, format='JPEG', quality=92)
 
                 client = AlbumHierarchy.PiwigoClient(
