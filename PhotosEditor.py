@@ -547,6 +547,20 @@ class _Tooltip:
                  font=("TkDefaultFont", 9), padx=6, pady=4).pack()
 
 
+def _logout(client) -> None:
+    """Close a Piwigo session, whatever happened to the work it was doing.
+
+    Always call this from a finally: an abandoned session sits on the server
+    until it times out, and the failure path is exactly where it gets skipped.
+    A logout that itself fails is not worth reporting -- the session will time
+    out anyway, and raising here would mask the original error.
+    """
+    try:
+        client.logout()
+    except Exception as e:
+        logger.debug(f"Ignoring failure to log out of Piwigo: {e}")
+
+
 class _ServerOp:
     """One operation that changes things on Piwigo, registered while it runs.
 
@@ -1586,9 +1600,11 @@ class PhotosEditor:
                     rate_limit_calls_per_second=params.get(
                         "rate_limit_calls_per_second", 2.0))
                 client.login(creds["username"], creds["password"])
-                n = AlbumHierarchy._fetch_and_save_hierarchy(
-                    client, lambda msg: self.root.after(0, lambda m=msg: self.set_status(m)))
-                client.logout()
+                try:
+                    n = AlbumHierarchy._fetch_and_save_hierarchy(
+                        client, lambda msg: self.root.after(0, lambda m=msg: self.set_status(m)))
+                finally:
+                    _logout(client)     # a failed refresh must not strand a session
                 self.root.after(0, lambda: self.set_status(
                     f"Album hierarchy refreshed ({n} albums)."))
                 self.root.after(0, self._populate_source_hierarchy_tree)
@@ -1899,8 +1915,10 @@ class PhotosEditor:
                 verify_ssl=creds.get("verify_ssl", True),
                 rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
             client.login(creds["username"], creds["password"])
-            images = client.get_album_images(album_id)
-            client.logout()
+            try:
+                images = client.get_album_images(album_id)
+            finally:
+                _logout(client)   # thumbnails are fetched below without a session
 
             if gen != panel.load_gen:
                 return
