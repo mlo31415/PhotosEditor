@@ -547,6 +547,19 @@ class _Tooltip:
                  font=("TkDefaultFont", 9), padx=6, pady=4).pack()
 
 
+def _changed_field_labels(loaded: dict, now: dict, labels: dict) -> list:
+    """Human labels of the custom fields that differ from how they loaded.
+
+    `loaded` empty means nothing is on screen to have changed -- no photo has
+    been loaded yet, or the editor has been cleared -- which is not the same as
+    "everything was cleared", so it reports nothing rather than everything.
+    """
+    if not loaded:
+        return []
+    return [labels.get(key, key) for key, value in now.items()
+            if value != loaded.get(key, "")]
+
+
 def _logout(client) -> None:
     """Close a Piwigo session, whatever happened to the work it was doing.
 
@@ -1094,15 +1107,8 @@ class PhotosEditor:
         if self._editor_dlg is None or not self._editor_dlg.winfo_exists():
             return      # embedded in the review split screen -- no dialog to close
         self._save_current_custom_fields()
-        if self._photo_edited:
-            name = (self._current_image_dict or {}).get("file") or \
-                   (self._current_image_dict or {}).get("name") or "this photo"
-            if not messagebox.askyesno(
-                    "Unsaved Edits",
-                    f'"{name}" has been edited but not uploaded to Piwigo.\n\n'
-                    "Close without uploading?",
-                    icon="warning", parent=self._editor_dlg):
-                return
+        if not self._confirm_discard_edits(parent=self._editor_dlg, action="Close"):
+            return
         # Persist the dialog's current geometry so it reopens in the same spot.
         self._state["editor_geometry"] = self._editor_dlg.geometry()
         _save_state(self._state)
@@ -1464,15 +1470,9 @@ class PhotosEditor:
         self.root.after(100, lambda: self._wait_for_ops_then(done, waited + 0.1))
 
     def _finish_close(self):
-        if self._photo_edited:
-            name = (self._current_image_dict or {}).get("file") or \
-                   (self._current_image_dict or {}).get("name") or "this photo"
-            if not messagebox.askyesno(
-                    "Unsaved Edits",
-                    f'"{name}" has been edited but not uploaded to Piwigo.\n\n'
-                    "Close without uploading?",
-                    icon="warning", parent=self.root):
-                return
+        self._save_current_custom_fields()
+        if not self._confirm_discard_edits(action="Quit"):
+            return
         state: dict = dict(self._state)   # preserve keys like editor_geometry
         # Capture editor dialog size/position even if closed via app exit
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
@@ -2344,11 +2344,7 @@ class PhotosEditor:
         # so an open editor dialog must be closed (and its edits dealt with) first.
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             self._save_current_custom_fields()
-            if self._photo_edited and not messagebox.askyesno(
-                    "Unsaved Edits",
-                    "The photo in the editor has been edited but not uploaded.\n\n"
-                    "Continue without uploading?",
-                    icon="warning", parent=self._editor_dlg):
+            if not self._confirm_discard_edits(parent=self._editor_dlg):
                 return
             self._state["editor_geometry"] = self._editor_dlg.geometry()
             self._editor_dlg.grab_release()
@@ -2414,15 +2410,7 @@ class PhotosEditor:
     # True if it is OK to leave the current record (asking about unsaved edits)
     def _ss_confirm_discard(self) -> bool:
         self._save_current_custom_fields()
-        if self._photo_edited:
-            if not messagebox.askyesno(
-                    "Unsaved Edits",
-                    "This photo has been edited but not uploaded to Piwigo.\n\n"
-                    "Continue without uploading?",
-                    icon="warning", parent=self.root):
-                return False
-            self._photo_edited = False
-        return True
+        return self._confirm_discard_edits()
 
     def _build_ss_record_panel(self, parent: ttk.LabelFrame):
         self._ss_pos_var = tk.StringVar()
@@ -4596,6 +4584,43 @@ class PhotosEditor:
             else:
                 data[key] = widget.get()
         self.custom_data[image_id] = data
+
+    def _unsaved_field_labels(self) -> list:
+        """Which custom fields have been typed into since the photo loaded."""
+        return _changed_field_labels(self._loaded_fields,
+                                     self._editor_field_values(),
+                                     dict(CUSTOM_FIELDS))
+
+    def _confirm_discard_edits(self, parent=None, action: str = "Continue") -> bool:
+        """Ask before throwing away work that has not reached Piwigo -- edits to
+        the photo, text typed into the fields, or both.  True to go ahead.
+
+        Answering yes clears both marks: the user has been told and chosen, so
+        the next thing they do must not ask again about the same work.
+        """
+        photo_edited = self._photo_edited
+        fields       = self._unsaved_field_labels()
+        if not (photo_edited or fields):
+            return True
+
+        parts = []
+        if photo_edited:
+            parts.append("the photo itself has been edited")
+        if fields:
+            parts.append("changes to " + ", ".join(fields))
+        name = ((self._current_image_dict or {}).get("file")
+                or (self._current_image_dict or {}).get("name") or "this photo")
+
+        if not messagebox.askyesno(
+                "Not Uploaded Yet",
+                f'For "{name}", {" and ".join(parts)}.\n\n'
+                "None of it has been uploaded to Piwigo.\n\n"
+                f"{action} without uploading?",
+                icon="warning", parent=parent or self.root):
+            return False
+        self._photo_edited  = False
+        self._loaded_fields = self._editor_field_values()
+        return True
 
     def _editor_field_values(self) -> dict:
         """The custom fields as they stand, for comparing against what loaded."""
