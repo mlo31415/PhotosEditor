@@ -1838,7 +1838,6 @@ class PhotosEditor:
         panel._load_dlg = dlg
         dlg.title("Downloading Photos")
         dlg.resizable(False, False)
-        dlg.protocol("WM_DELETE_WINDOW", lambda: None)
         dlg_alive = [True]
         dlg.bind("<Destroy>", lambda _e: dlg_alive.__setitem__(0, False))
 
@@ -1852,7 +1851,26 @@ class PhotosEditor:
         pbar.start(12)
         count_lbl_var = tk.StringVar(value="Connecting…")
         ttk.Label(dlg, textvariable=count_lbl_var, foreground="gray",
-                  padding=(16, 0, 16, 12)).pack()
+                  padding=(16, 0, 16, 4)).pack()
+
+        def _cancel_load():
+            """Stop loading this album.  Bumping the generation is all it takes:
+            the worker checks it before every thumbnail and returns, leaving the
+            panel showing however many arrived."""
+            cancel_btn.config(state="disabled")
+            count_lbl_var.set("Stopping…")
+            panel.load_gen += 1
+            panel._load_dlg = None
+            if dlg_alive[0]:
+                dlg.destroy()
+            shown = len(panel.thumb_cells)
+            self.set_status(
+                f'Stopped loading "{album_name}" — {shown} '
+                f'photo{"s" if shown != 1 else ""} shown.')
+
+        cancel_btn = ttk.Button(dlg, text="Cancel", command=_cancel_load)
+        cancel_btn.pack(pady=(0, 12))
+        dlg.protocol("WM_DELETE_WINDOW", _cancel_load)   # the X cancels too
 
         self.root.update_idletasks()
         dlg.update_idletasks()
