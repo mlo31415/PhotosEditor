@@ -119,6 +119,16 @@ class SessionClosedWhenTheWorkFails(unittest.TestCase):
         pe.AlbumHierarchy.PiwigoClient = factory
         self.addCleanup(setattr, pe.AlbumHierarchy, "PiwigoClient", original)
 
+        # These workers fall through to fetching the image itself. Stub that
+        # too, or the suite would do a DNS lookup and wait on a timeout.
+        real_get = pe.requests.get
+
+        def no_network(*a, **k):
+            raise RuntimeError("network deliberately unavailable in tests")
+
+        pe.requests.get = no_network
+        self.addCleanup(setattr, pe.requests, "get", real_get)
+
     def _ran_and_closed(self):
         self.assertTrue(self.made, "no Piwigo client was created")
         for c in self.made:

@@ -402,7 +402,9 @@ def _ss_face_circle_on_canvas(box, orig_size, display_rect):
 def _load_state() -> dict:
     try:
         if STATE_FILE.exists():
-            with open(STATE_FILE) as f:
+            # Explicit encoding: album names carry accents, and the platform
+            # default is not UTF-8 everywhere PE might run
+            with open(STATE_FILE, encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
         pass
@@ -412,8 +414,8 @@ def _load_state() -> dict:
 def _save_state(state: dict) -> None:
     try:
         tmp = STATE_FILE.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(state, f, indent=2)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
         tmp.replace(STATE_FILE)
     except Exception as e:
         logger.warning(f"Could not save state: {e}")
@@ -438,11 +440,16 @@ def _geometry_on_screen(win, geo: str) -> str:
     """Given a saved "WxH+X+Y", return a geometry guaranteed to land on a currently-connected monitor: if the
     window's title-bar corner is outside the virtual desktop (e.g. it was last used on a monitor that is no
     longer attached), clamp it back onto a real display. A genuine multi-monitor position is left untouched."""
-    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", (geo or "").strip())
+    # Tk writes the offsets as +X+Y from the top-left, but -X-Y (from the right
+    # and bottom edges) is equally valid and would otherwise slip past the check
+    # unexamined, which is the one case this function exists to catch.
+    m = re.match(r"(\d+)x(\d+)([+-])(-?\d+)([+-])(-?\d+)$", (geo or "").strip())
     if not m:
         return geo
-    w, h, x, y = (int(v) for v in m.groups())
+    w, h = int(m.group(1)), int(m.group(2))
     vx, vy, vw, vh = _virtual_screen_bounds(win)
+    x = int(m.group(4)) if m.group(3) == "+" else vx + vw - w - int(m.group(4))
+    y = int(m.group(6)) if m.group(5) == "+" else vy + vh - h - int(m.group(6))
     margin = 60      # keep at least this much of the title bar grabbable inside the desktop
     if vx <= x <= vx + vw - margin and vy <= y <= vy + vh - margin:
         return geo   # top-left is on a visible monitor -> leave it alone
@@ -882,6 +889,7 @@ class PhotosEditor:
         self._drag_window:          tk.Toplevel | None = None
         self._drag_tk_ref:          "ImageTk.PhotoImage | None" = None
         self._drag_op_label:        "tk.Label | None" = None
+        self._drag_hover_label:     "tk.Label | None" = None
         self._press_pos:            tuple | None = None
         self._move_undo_stack:      list        = []     # undo records for drag-and-drop ops
         self._double_click_pending: bool        = False  # suppress spurious release after dbl-click
@@ -1110,7 +1118,10 @@ class PhotosEditor:
         if not self._confirm_discard_edits(parent=self._editor_dlg, action="Close"):
             return
         # Persist the dialog's current geometry so it reopens in the same spot.
+        # Take the main window's along with it: this writes the state file
+        # mid-session, and it should not put back the geometry from start-up.
         self._state["editor_geometry"] = self._editor_dlg.geometry()
+        self._capture_window_state(self._state)
         _save_state(self._state)
         self._editor_dlg.grab_release()
         self._editor_dlg.withdraw()
@@ -1457,6 +1468,23 @@ class PhotosEditor:
             return
         self._finish_close()
 
+    def _capture_window_state(self, state: dict, may_unmaximise: bool = False):
+        """Record the window's size, position and maximised-ness into state.
+
+        Tk reports a maximised window's geometry as its maximised size, so the
+        size to restore to can only be read by un-maximising.  That is fine at
+        exit, where the window is about to vanish, and not fine mid-session --
+        so away from exit a maximised window keeps whatever restore size was
+        already saved rather than overwriting it with the full-screen one.
+        """
+        zoomed = self._is_zoomed(self.root)
+        state["zoomed"] = zoomed
+        if zoomed and may_unmaximise:
+            self._set_zoomed(False)
+            self.root.update_idletasks()
+        if not zoomed or may_unmaximise:
+            state["geometry"] = self.root.geometry()
+
     def _wait_for_ops_then(self, done, waited: float = 0.0):
         """Let cancelled operations reach a clean stopping point, then carry on.
         Bounded, so a wedged worker can never leave PE unquittable."""
@@ -1477,15 +1505,7 @@ class PhotosEditor:
         # Capture editor dialog size/position even if closed via app exit
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             state["editor_geometry"] = self._editor_dlg.geometry()
-        # Save whether the window was maximised, and the size it would return to.
-        # Tk reports a maximised window's geometry as its maximised size, so the
-        # window is un-maximised first to read the size it would restore to --
-        # invisible, since it is about to be destroyed.
-        state["zoomed"] = self._is_zoomed(self.root)
-        if state["zoomed"]:
-            self._set_zoomed(False)
-            self.root.update_idletasks()
-        state["geometry"] = self.root.geometry()
+        self._capture_window_state(state, may_unmaximise=True)
         # Always save the unzoomed sash as a fraction so it survives window resizes
         try:
             if self._zoomed:
@@ -2638,8 +2658,17 @@ class PhotosEditor:
         if not self._ss_confirm_discard():
             return
         rec = self._ss_records[self._ss_rec_index]
-        found, completed = _ss_mark_record_done_in_log(
-            Path(self._state.get("ss_review_dir", "")), rec)
+        # An unset folder would make this Path(""), the working directory, where
+        # the record certainly is not -- say so rather than searching the wrong place
+        review_dir = self._state.get("ss_review_dir", "")
+        if not review_dir or not Path(review_dir).is_dir():
+            messagebox.showwarning(
+                "Review SS Comments",
+                "The SlideShow output folder is not set, or is no longer "
+                "reachable, so this record cannot be marked done.",
+                parent=self.root)
+            return
+        found, completed = _ss_mark_record_done_in_log(Path(review_dir), rec)
         if not found:
             messagebox.showwarning(
                 "Review SS Comments",
@@ -2786,10 +2815,13 @@ class PhotosEditor:
             self._drag_window.destroy()
             self._drag_window = None
         self._press_pos = None
+        # Both labels lived in that window; keeping the references would leave
+        # them pointing at destroyed widgets
+        self._drag_op_label    = None
+        self._drag_hover_label = None
 
         if was_drag:
             self._drag_is_copy = self._ctrl_held  # final check: Ctrl held at drop = copy
-            self._drag_op_label = None
             self._execute_drop(event)
         elif self._double_click_pending:
             self._double_click_pending = False   # swallow the spurious 2nd release
@@ -2802,8 +2834,11 @@ class PhotosEditor:
         if self._drag_window is not None:
             self._drag_window.destroy()
             self._drag_window = None
+        self._drag_op_label    = None
+        self._drag_hover_label = None
+        # Emptying the batch is what stops a drop; _drag_source_side keeps its
+        # last real value rather than becoming None, which its type does not allow
         self._drag_batch = []
-        self._drag_source_side = None
         self._press_pos = None
         self._open_editor_dialog(img_dict)
 
