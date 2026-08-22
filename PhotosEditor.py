@@ -2281,10 +2281,7 @@ class PhotosEditor:
                             logger.warning(
                                 f"Download of image {img.get('id')} ({fname}) failed: {e}")
             finally:
-                try:
-                    client.logout()
-                except Exception:
-                    pass
+                _logout(client)
             self.root.after(0, lambda: finish(downloaded, skipped, errors, dl_secs,
                                               cancel_evt.is_set(), ""))
         except Exception as e:
@@ -2713,10 +2710,7 @@ class PhotosEditor:
                         if img.mode != "RGB":
                             img = img.convert("RGB")
             finally:
-                try:
-                    client.logout()
-                except Exception:
-                    pass
+                _logout(client)
 
             def _apply(info=info, img=img, scale=scale):
                 if gen != self._ss_load_gen or self._ss_review_frame is None:
@@ -3058,6 +3052,7 @@ class PhotosEditor:
             errors    = []
             n_ok      = 0
             undo_items = []   # {image_id, name, original_cats}
+            client    = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3093,11 +3088,11 @@ class PhotosEditor:
                     except Exception as e:
                         errors.append(f"{name}: {e}")
                     advance(i + 1)
-
-                client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
 
             def finish():
@@ -3370,6 +3365,7 @@ class PhotosEditor:
         sop = self._begin_server_op(f'Moving album "{short}"')
 
         def worker():
+            client = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3381,12 +3377,13 @@ class PhotosEditor:
                 client.login(creds["username"], creds["password"])
                 client.move_album(album_id, dst_id)
                 AlbumHierarchy._fetch_and_save_hierarchy(client, lambda _: None)
-                client.logout()
                 self.root.after(0, finish_ok)
             except Exception as exc:
                 err = str(exc)
                 self.root.after(0, lambda: finish_err(err))
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
 
         def finish_ok():
@@ -3424,6 +3421,7 @@ class PhotosEditor:
         def worker():
             errors = []
             n_ok   = 0
+            client = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3443,10 +3441,11 @@ class PhotosEditor:
                     except Exception as e:
                         errors.append(f"{item['name']}: {e}")
                     advance(i + 1)
-                client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
 
             def finish():
@@ -3505,6 +3504,7 @@ class PhotosEditor:
         def worker():
             errors = []
             n_ok   = 0
+            client = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3530,10 +3530,11 @@ class PhotosEditor:
                     except Exception as e:
                         errors.append(f"{name}: {e}")
                     advance(i + 1)
-                client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
 
             def finish():
@@ -3568,6 +3569,7 @@ class PhotosEditor:
         sop = self._begin_server_op(f'Removing "{name}" from an album')
 
         def worker():
+            client = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3581,12 +3583,13 @@ class PhotosEditor:
                 new_cats = [c for c in current_cats if c != album_id]
                 if new_cats != current_cats:
                     client.set_image_categories(image_id, new_cats)
-                client.logout()
                 self.root.after(0, lambda: self._after_remove(image_id, name, side))
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror(
                     "Remove Failed", str(e), parent=self.root))
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
 
         # One photo is a single call -- no progress dialog, but it is registered
@@ -3655,6 +3658,7 @@ class PhotosEditor:
 
             # Fetch full image metadata (includes author, tags, etc.)
             rich_dict = dict(img_dict)
+            client = None
             try:
                 client = AlbumHierarchy.PiwigoClient(
                     creds["url"], creds["username"], creds["password"],
@@ -3662,10 +3666,12 @@ class PhotosEditor:
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
                 client.login(creds["username"], creds["password"])
                 info = client.get_image_info(img_dict["id"])
-                client.logout()
                 rich_dict.update(info)
             except Exception as e:
                 logger.warning(f"Could not fetch full image info for {img_dict.get('id')}: {e}")
+            finally:
+                if client is not None:
+                    _logout(client)
 
             with warnings.catch_warnings():
                 if not verify:
@@ -3934,6 +3940,7 @@ class PhotosEditor:
 
         def worker():
             temp_path = None
+            client    = None
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3945,21 +3952,15 @@ class PhotosEditor:
                         rate_limit_calls_per_second=params.get('rate_limit_calls_per_second', 2.0))
                     set_stage("Logging in…")
                     client.login(creds['username'], creds['password'])
-                    try:
-                        tag_names = [t.strip() for t in tags.split(',') if t.strip()]
-                        set_stage("Matching tags…")
-                        tag_ids = client.resolve_tag_ids(tag_names)
-                        set_stage("Saving details…")
-                        # "" clears a field, so pass every one the editor shows
-                        client.set_image_info(
-                            image_id,
-                            author=author, comment=comment,
-                            date_creation=date_creation, tag_ids=tag_ids)
-                    finally:
-                        try:
-                            client.logout()
-                        except Exception:
-                            pass
+                    tag_names = [t.strip() for t in tags.split(',') if t.strip()]
+                    set_stage("Matching tags…")
+                    tag_ids = client.resolve_tag_ids(tag_names)
+                    set_stage("Saving details…")
+                    # "" clears a field, so pass every one the editor shows
+                    client.set_image_info(
+                        image_id,
+                        author=author, comment=comment,
+                        date_creation=date_creation, tag_ids=tag_ids)
                     set_stage("Done.")
                     self.root.after(0, lambda: finish_ok(uploaded_file=False))
                     return
@@ -4021,7 +4022,6 @@ class PhotosEditor:
                         client.refresh_representative(album_id)
                     except Exception as e:
                         logger.warning(f"refreshRepresentative failed (non-fatal): {e}")
-                client.logout()
                 set_stage("Done.")
 
                 self.root.after(0, lambda: finish_ok(uploaded_file=True))
@@ -4034,6 +4034,8 @@ class PhotosEditor:
                     self.set_status(f"Upload failed: {msg}")
                 self.root.after(0, finish_err)
             finally:
+                if client is not None:
+                    _logout(client)
                 self._end_server_op(sop)
                 if temp_path:
                     try:
