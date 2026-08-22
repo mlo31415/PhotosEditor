@@ -547,6 +547,22 @@ class _Tooltip:
                  font=("TkDefaultFont", 9), padx=6, pady=4).pack()
 
 
+class _ServerOp:
+    """One operation that changes things on Piwigo, registered while it runs.
+
+    Exit checks the register so it can warn instead of killing an operation
+    half-done, and asks through `cancel` for it to stop at a clean point --
+    between photos, never in the middle of one.
+    """
+
+    def __init__(self, description: str):
+        self.description = description
+        self.cancel      = threading.Event()
+
+    def __repr__(self):
+        return f"<_ServerOp {self.description!r}>"
+
+
 def _pick_derivative_url(img_dict: dict, preference: tuple) -> str:
     derivs = img_dict.get("derivatives", {})
     for key in preference:
@@ -906,6 +922,9 @@ class PhotosEditor:
         self._ss_rec_index:    int  = 0
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
+
+        # Operations changing things on Piwigo, while they are running
+        self._in_flight: list = []
 
         self._build_ui()
         self._restore_state()
@@ -1400,6 +1419,37 @@ class PhotosEditor:
         self._editor_vpane.sashpos(0, round(total * 13 / 30))
 
     def _on_close(self):
+        # Something still changing things on Piwigo?  Killing the process would
+        # abandon it half-done, so say so, and if the answer is still yes, ask
+        # it to stop at a clean point and give it a moment to do so.
+        if self._in_flight:
+            running = "\n  ".join(op.description for op in self._in_flight)
+            if not messagebox.askyesno(
+                    "Still Working on Piwigo",
+                    f"This is still running:\n\n  {running}\n\n"
+                    "Quitting now would stop it part-way, and photos could be "
+                    "left half-moved.\n\nQuit anyway?",
+                    icon="warning", parent=self.root):
+                return
+            for op in list(self._in_flight):
+                op.cancel.set()
+            self._wait_for_ops_then(self._finish_close)
+            return
+        self._finish_close()
+
+    def _wait_for_ops_then(self, done, waited: float = 0.0):
+        """Let cancelled operations reach a clean stopping point, then carry on.
+        Bounded, so a wedged worker can never leave PE unquittable."""
+        if not self._in_flight or waited >= 5.0:
+            if self._in_flight:
+                logger.warning("Quitting with operations still registered: "
+                               f"{[op.description for op in self._in_flight]}")
+            done()
+            return
+        self.set_status("Finishing the current photo before quitting…")
+        self.root.after(100, lambda: self._wait_for_ops_then(done, waited + 0.1))
+
+    def _finish_close(self):
         if self._photo_edited:
             name = (self._current_image_dict or {}).get("file") or \
                    (self._current_image_dict or {}).get("name") or "this photo"
@@ -1665,10 +1715,25 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Progress dialog helper
     # -----------------------------------------------------------------------
+    # ── Operations that change things on Piwigo ──────────────────────────────
+    def _begin_server_op(self, description: str) -> "_ServerOp":
+        """Register an operation for the duration of its work.  Always pair with
+        _end_server_op in a finally, or exit will warn about a phantom."""
+        op = _ServerOp(description)
+        self._in_flight.append(op)      # list ops are atomic enough under the GIL
+        return op
+
+    def _end_server_op(self, op: "_ServerOp"):
+        try:
+            self._in_flight.remove(op)
+        except ValueError:
+            pass
+
     def _make_progress_dialog(self, title: str, heading: str, total: int,
                                subheading: str = "",
                                initial_stage: str = "Starting…",
-                               grab: bool = False):
+                               grab: bool = False,
+                               on_cancel=None):
         """Create a centered, non-closeable progress dialog.
 
         total > 0  → determinate bar (0..total)
@@ -1702,6 +1767,15 @@ class PhotosEditor:
         stage_var = tk.StringVar(value=initial_stage)
         ttk.Label(dlg, textvariable=stage_var, foreground="gray",
                   padding=(16, 0, 16, 12)).pack()
+
+        if on_cancel is not None:
+            def _cancel():
+                cancel_btn.config(state="disabled")
+                stage_var.set("Stopping after the current photo…")
+                on_cancel()
+            cancel_btn = ttk.Button(dlg, text="Cancel", command=_cancel)
+            cancel_btn.pack(pady=(0, 12))
+            dlg.protocol("WM_DELETE_WINDOW", _cancel)   # the X means cancel now
 
         self.root.update_idletasks()
         dlg.update_idletasks()
@@ -2015,7 +2089,10 @@ class PhotosEditor:
         dlg.title("Downloading Need_IDs" if needs_id_only else "Downloading Album")
         dlg.resizable(False, False)
         dlg.grab_set()
-        cancel_evt = threading.Event()
+        # The download's own cancel and the one exit uses are the same signal
+        sop = self._begin_server_op(
+            "Downloading photos" if not needs_id_only else "Downloading Need_IDs")
+        cancel_evt = sop.cancel
 
         action_var = tk.StringVar(value="Fetching image lists…")
         count_var  = tk.StringVar(value="")
@@ -2081,10 +2158,14 @@ class PhotosEditor:
                 title, f"{summary}\n\nDestination:\n{dest_display}",
                 parent=self.root)
 
-        threading.Thread(
-            target=self._worker_download_album,
-            args=(roots, include_subs, cancel_evt, progress, finish, needs_id_only),
-            daemon=True).start()
+        def run():
+            try:
+                self._worker_download_album(roots, include_subs, cancel_evt,
+                                            progress, finish, needs_id_only)
+            finally:
+                self._end_server_op(sop)
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _worker_download_album(self, roots: list[tuple[dict, Path]], include_subs: bool,
                                cancel_evt: threading.Event, progress, finish,
@@ -2948,10 +3029,12 @@ class PhotosEditor:
         total = len(batch)
 
         verb = 'Moving' if op == 'move' else 'Copying'
+        sop = self._begin_server_op(f"{verb} {total} photo(s)")
         set_stage, advance, close_dlg = self._make_progress_dialog(
             title=f"{verb} Photos",
             heading=f"{verb} {total} photo(s)…",
-            total=max(total, 1))
+            total=max(total, 1),
+            on_cancel=sop.cancel.set)
 
         def worker():
             errors    = []
@@ -2967,6 +3050,8 @@ class PhotosEditor:
                 client.login(creds["username"], creds["password"])
 
                 for i, d in enumerate(batch):
+                    if sop.cancel.is_set():
+                        break               # stop between photos, never inside one
                     image_id = d.get("id")
                     name = d.get("file") or d.get("name") or str(image_id)
                     set_stage(f"{'Moving' if op == 'move' else 'Copying'}: {name}")
@@ -2994,6 +3079,8 @@ class PhotosEditor:
                 client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
+            finally:
+                self._end_server_op(sop)
 
             def finish():
                 close_dlg()
@@ -3005,9 +3092,12 @@ class PhotosEditor:
                         'description': f"{op.capitalize()} {len(undo_items)} photo(s)",
                         'items': undo_items,
                     })
+                stopped = sop.cancel.is_set()
                 self.set_status(
-                    f"{op.capitalize()} complete: {n_ok} ok"
-                    + (f", {len(errors)} error(s)" if errors else ".")
+                    (f"{op.capitalize()} stopped: " if stopped
+                     else f"{op.capitalize()} complete: ")
+                    + f"{n_ok} of {total} done"
+                    + (f", {len(errors)} error(s)" if errors else "")
                     + ("  (Ctrl+Z to undo)" if undo_items else ""))
                 self._apply_move_copy_locally(undo_items, op, src_album_id, dst_album_id)
 
@@ -3259,6 +3349,8 @@ class PhotosEditor:
         bar.pack(padx=16, pady=(0, 12))
         bar.start(12)
 
+        sop = self._begin_server_op(f'Moving album "{short}"')
+
         def worker():
             try:
                 creds  = _store.load_credentials()
@@ -3276,6 +3368,8 @@ class PhotosEditor:
             except Exception as exc:
                 err = str(exc)
                 self.root.after(0, lambda: finish_err(err))
+            finally:
+                self._end_server_op(sop)
 
         def finish_ok():
             bar.stop(); dlg.grab_release(); dlg.destroy()
@@ -3302,10 +3396,12 @@ class PhotosEditor:
         desc   = record['description']
         total  = len(items)
 
+        sop = self._begin_server_op(f"Undoing: {desc}")
         set_stage, advance, close_dlg = self._make_progress_dialog(
             title="Undoing…",
             heading=f"Undoing: {desc}",
-            total=max(total, 1))
+            total=max(total, 1),
+            on_cancel=sop.cancel.set)
 
         def worker():
             errors = []
@@ -3319,6 +3415,8 @@ class PhotosEditor:
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
                 client.login(creds["username"], creds["password"])
                 for i, item in enumerate(items):
+                    if sop.cancel.is_set():
+                        break
                     set_stage(f"Restoring: {item['name']}")
                     try:
                         client.set_image_categories(
@@ -3330,13 +3428,17 @@ class PhotosEditor:
                 client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
+            finally:
+                self._end_server_op(sop)
 
             def finish():
                 close_dlg()
                 if errors:
                     messagebox.showerror("Undo Errors", "\n".join(errors), parent=self.root)
                 self.set_status(
-                    f"Undone: {desc} — {n_ok} restored"
+                    (f"Undo stopped: {desc} — " if sop.cancel.is_set()
+                     else f"Undone: {desc} — ")
+                    + f"{n_ok} of {total} restored"
                     + (f", {len(errors)} error(s)" if errors else "."))
                 self._load_album_photos()
                 if self.target_album_id is not None:
@@ -3374,8 +3476,17 @@ class PhotosEditor:
                 parent=self.root):
             return
 
+        sop = self._begin_server_op(f"Removing {n} photo(s) from an album")
+        set_stage, advance, close_dlg = self._make_progress_dialog(
+            title="Removing…",
+            heading=f"Removing {n} photo(s)",
+            subheading=f'from  "{album_name}"',
+            total=max(n, 1),
+            on_cancel=sop.cancel.set)
+
         def worker():
             errors = []
+            n_ok   = 0
             try:
                 creds  = _store.load_credentials()
                 params = _store.load_op_params()
@@ -3384,24 +3495,39 @@ class PhotosEditor:
                     verify_ssl=creds.get("verify_ssl", True),
                     rate_limit_calls_per_second=params.get("rate_limit_calls_per_second", 2.0))
                 client.login(creds["username"], creds["password"])
-                for d in batch:
+                for i, d in enumerate(batch):
+                    if sop.cancel.is_set():
+                        break
                     iid  = d.get("id")
                     name = d.get("file") or d.get("name") or str(iid)
+                    set_stage(f"Removing: {name}")
                     try:
                         info = client.get_image_info(iid)
                         current_cats = [int(c["id"]) for c in info.get("categories", [])]
                         new_cats = [c for c in current_cats if c != album_id]
                         if new_cats != current_cats:
                             client.set_image_categories(iid, new_cats)
+                        n_ok += 1
                         self.root.after(0, lambda i=iid, nm=name: self._after_remove(i, nm, side))
                     except Exception as e:
                         errors.append(f"{name}: {e}")
+                    advance(i + 1)
                 client.logout()
             except Exception as e:
                 errors.append(f"Connection error: {e}")
-            if errors:
-                self.root.after(0, lambda: messagebox.showerror(
-                    "Remove Errors", "\n".join(errors), parent=self.root))
+            finally:
+                self._end_server_op(sop)
+
+            def finish():
+                close_dlg()
+                if errors:
+                    messagebox.showerror("Remove Errors", "\n".join(errors),
+                                         parent=self.root)
+                self.set_status(
+                    ("Remove stopped: " if sop.cancel.is_set() else "Removed ")
+                    + f"{n_ok} of {n} photo(s)"
+                    + (f", {len(errors)} error(s)" if errors else "."))
+            self.root.after(0, finish)
 
         self.set_status(f"Removing {n} photo(s)…")
         threading.Thread(target=worker, daemon=True).start()
@@ -3420,6 +3546,8 @@ class PhotosEditor:
                 "This only removes the album association — the photo remains in Piwigo.",
                 parent=self.root):
             return
+
+        sop = self._begin_server_op(f'Removing "{name}" from an album')
 
         def worker():
             try:
@@ -3440,7 +3568,11 @@ class PhotosEditor:
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror(
                     "Remove Failed", str(e), parent=self.root))
+            finally:
+                self._end_server_op(sop)
 
+        # One photo is a single call -- no progress dialog, but it is registered
+        # so that quitting mid-flight still warns
         self.set_status(f'Removing "{name}"…')
         threading.Thread(target=worker, daemon=True).start()
 
@@ -3764,6 +3896,8 @@ class PhotosEditor:
         # Snapshot the edited image now, before the thread starts
         pil_snapshot = self._viewer_image.copy()
         album_id     = upload_album_id
+        sop = self._begin_server_op(
+            f"Saving details of {fname}" if metadata_only else f"Uploading {fname}")
 
         def finish_ok(uploaded_file: bool):
             close_dlg()
@@ -3882,6 +4016,7 @@ class PhotosEditor:
                     self.set_status(f"Upload failed: {msg}")
                 self.root.after(0, finish_err)
             finally:
+                self._end_server_op(sop)
                 if temp_path:
                     try:
                         Path(temp_path).unlink()
