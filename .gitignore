@@ -10,17 +10,15 @@ PhotosEditorr Params.json
 __pycache__/
 *.py[cod]
 
-# PyInstaller build artifacts
+# PyInstaller build artifacts.  PhotosEditor.spec and Build.bat are NOT artifacts --
+# the spec carries real build configuration (the sibling folders to bundle, the icon)
+# and is tracked, so a rebuilt exe is the same exe on any machine.
 build/
 dist/
 *.exe
-*.spec
 
 # IDE
 .idea/
-
-# Local build script
-Build.bat
 
 # Documentation kept locally
 PhotosEditor.docx
