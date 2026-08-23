@@ -54,9 +54,14 @@ else:
     _SCRIPT_DIR = Path(__file__).resolve().parent
 
 _PIWIGO_HELPERS = _SCRIPT_DIR.parent / "PiwigoHelpers"
+# How a face is shown is shared with SlideShow, so the same face is cropped and
+# ringed identically in both: FaceGeometry lives in HelpersPackage, either linked
+# into this directory or found as a sibling of it.
+_HELPERS_PACKAGE = _SCRIPT_DIR.parent / "HelpersPackage"
 
-if str(_PIWIGO_HELPERS) not in sys.path:
-    sys.path.insert(0, str(_PIWIGO_HELPERS))
+for _dir in (_PIWIGO_HELPERS, _HELPERS_PACKAGE):
+    if _dir.is_dir() and str(_dir) not in sys.path:
+        sys.path.insert(0, str(_dir))
 
 try:
     import AlbumHierarchy
@@ -64,6 +69,7 @@ try:
     import TagHandler
     import DateUtils
     import PhotoRestoration
+    from FaceGeometry import FaceCircleOnDisplay, RoundFaceThumbnail
     # Override the params-file path to the exe/script's own directory.
     AlbumHierarchy.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
@@ -73,9 +79,10 @@ except ImportError as _e:
     _frozen = getattr(sys, "frozen", False)
     _hint = ("This is a packaging error — please report it to the developer."
              if _frozen else
-             f"Expected to find it in:\n{_PIWIGO_HELPERS}\n\nEnsure the PiwigoHelpers folder is a sibling of the PhotosEditor folder.")
+             f"Expected to find them in:\n{_PIWIGO_HELPERS}\nand\n{_HELPERS_PACKAGE}\n\n"
+             "Ensure the PiwigoHelpers and HelpersPackage folders are siblings of the PhotosEditor folder.")
     _mb.showerror("Startup Error",
-                  f"Cannot import AlbumHierarchy.\n\n{_hint}\n\nDetail: {_e}")
+                  f"Cannot import a module PhotosEditor needs.\n\n{_hint}\n\nDetail: {_e}")
     sys.exit(1)
 
 from CredentialStore import CredentialStore, CredentialError
@@ -357,19 +364,10 @@ def _collect_ss_records(directory: Path) -> list[dict]:
 
 
 def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64) -> "ImageTk.PhotoImage":
-    """A round thumbnail of the face at box (x, y, w, h), as in SlideShow's
-    Identify Photo table.  Out-of-bounds crops are padded (black under the mask)
-    rather than clamped, so edge faces are not distorted."""
-    x, y, w, h = box
-    cx, cy = x + w / 2, y + h / 2
-    r = 0.65 * (w * w + h * h) ** 0.5
-    square = img.crop((int(cx - r), int(cy - r), int(cx + r), int(cy + r))).resize(
-        (size, size), Image.LANCZOS)
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-    thumb = Image.new("RGB", (size, size), bg)
-    thumb.paste(square, (0, 0), mask)
-    return ImageTk.PhotoImage(thumb)
+    """A round thumbnail of the face at box (x, y, w, h), exactly as SlideShow
+    cuts it for its Identify Photo table -- the cutting itself is the shared
+    FaceGeometry, so the two cannot drift apart."""
+    return ImageTk.PhotoImage(RoundFaceThumbnail(img, box, bg, size))
 
 
 def _ss_face_circle_on_canvas(box, orig_size, display_rect):
@@ -382,21 +380,11 @@ def _ss_face_circle_on_canvas(box, orig_size, display_rect):
     Returns the (x0, y0, x1, y1) bounding box of the circle SS crops its
     thumbnail from, in canvas coordinates, or None when the box cannot belong
     to this photo (so a stale record never draws a ring in the wrong place).
+
+    The arithmetic is the shared FaceGeometry's, so the ring drawn here and the
+    thumbnail beside it are the same circle SlideShow used.
     """
-    x, y, w, h = (float(v) for v in box)
-    ow, oh     = (float(v) for v in orig_size)
-    if ow <= 0 or oh <= 0 or w <= 0 or h <= 0:
-        return None
-    if x < 0 or y < 0 or x + w > ow or y + h > oh:
-        return None
-    px0, py0, px1, py1 = display_rect
-    tw, th = px1 - px0, py1 - py0
-    if tw <= 0 or th <= 0:
-        return None
-    cx, cy = x + w / 2, y + h / 2
-    r = 0.65 * (w * w + h * h) ** 0.5       # the radius _round_face_thumb crops
-    return (px0 + (cx - r) * tw / ow, py0 + (cy - r) * th / oh,
-            px0 + (cx + r) * tw / ow, py0 + (cy + r) * th / oh)
+    return FaceCircleOnDisplay(box, orig_size, display_rect)
 
 
 def _load_state() -> dict:
