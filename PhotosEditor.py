@@ -116,6 +116,12 @@ VIEWER_FALLBACK_SIZES = ("xxlarge", "xlarge", "large", "medium", "small",
                          "2small", "thumb")
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 
+# TEMPORARY: nothing may change on Piwigo without being approved first.  While
+# this is True every operation that writes to the server stops to ask, with the
+# answer set to No, so the block holds unless it is deliberately overridden.
+# Set to False (or delete this and the _confirm_update_blocked calls) to lift it.
+UPDATES_BLOCKED = True
+
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
 
@@ -3285,6 +3291,11 @@ class PhotosEditor:
         total = len(batch)
 
         verb = 'Moving' if op == 'move' else 'Copying'
+        if not self._confirm_update_blocked(
+                f"This would {op} {total} photo(s) between albums on Piwigo."):
+            self.set_status(f"{op.capitalize()} cancelled — updates to Piwigo are blocked.")
+            return
+
         sop = self._begin_server_op(f"{verb} {total} photo(s)")
         set_stage, advance, close_dlg = self._make_progress_dialog(
             title=f"{verb} Photos",
@@ -3596,6 +3607,11 @@ class PhotosEditor:
                 parent=self.root):
             return
 
+        if not self._confirm_update_blocked(
+                f'This would move the album "{short}" on Piwigo.'):
+            self.set_status("Album move cancelled — updates to Piwigo are blocked.")
+            return
+
         dlg = tk.Toplevel(self.root)
         dlg.title("Moving album…")
         dlg.resizable(False, False)
@@ -3649,6 +3665,11 @@ class PhotosEditor:
     def _undo_drag_drop(self, _event=None):
         if not self._move_undo_stack:
             self.set_status("Nothing to undo.")
+            return
+        if not self._confirm_update_blocked(
+                f"This would undo \"{self._move_undo_stack[-1]['description']}\" "
+                "by putting those photos back in their albums on Piwigo."):
+            self.set_status("Undo cancelled — updates to Piwigo are blocked.")
             return
         record = self._move_undo_stack.pop()
         items  = record['items']
@@ -3737,6 +3758,11 @@ class PhotosEditor:
                 parent=self.root):
             return
 
+        if not self._confirm_update_blocked(
+                f'This would take {n} photo(s) out of "{album_name}" on Piwigo.'):
+            self.set_status("Remove cancelled — updates to Piwigo are blocked.")
+            return
+
         sop = self._begin_server_op(f"Removing {n} photo(s) from an album")
         set_stage, advance, close_dlg = self._make_progress_dialog(
             title="Removing…",
@@ -3808,6 +3834,11 @@ class PhotosEditor:
                 f'Remove "{name}" from "{album_name}"?\n\n'
                 "This only removes the album association — the photo remains in Piwigo.",
                 parent=self.root):
+            return
+
+        if not self._confirm_update_blocked(
+                f'This would take "{name}" out of "{album_name}" on Piwigo.'):
+            self.set_status("Remove cancelled — updates to Piwigo are blocked.")
             return
 
         sop = self._begin_server_op(f'Removing "{name}" from an album')
@@ -4071,6 +4102,11 @@ class PhotosEditor:
         img_dict = self._current_image_dict
         image_id = img_dict.get("id")
         fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
+
+        if not self._confirm_update_blocked(
+                f'This would upload "{fname}" and its details to Piwigo.'):
+            self.set_status("Upload cancelled — updates to Piwigo are blocked.")
+            return
 
         # Uploading an untouched photo re-encodes it and rewrites its metadata for
         # no gain, so make sure that is really what was meant.  (Only for a photo
@@ -4859,6 +4895,21 @@ class PhotosEditor:
         self._photo_edited  = False
         self._loaded_fields = self._editor_field_values()
         return True
+
+    def _confirm_update_blocked(self, what: str, parent=None) -> bool:
+        """Stop an operation that would change Piwigo while UPDATES_BLOCKED.
+
+        Returns True to let it through -- immediately when the block is off, and
+        otherwise only if the warning is answered Yes.  No is the default answer,
+        so Return or Escape leaves the server untouched.
+        """
+        if not UPDATES_BLOCKED:
+            return True
+        return messagebox.askyesno(
+            "Updates Are Blocked",
+            f"Updates to Piwigo are currently blocked.\n\n{what}\n\n"
+            "Send this change to the server anyway?",
+            icon="warning", default=messagebox.NO, parent=parent or self.root)
 
     def _editor_field_values(self) -> dict:
         """The custom fields as they stand, for comparing against what loaded."""
