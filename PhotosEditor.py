@@ -2482,6 +2482,9 @@ class PhotosEditor:
         self.root.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
         self.root.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
         self.root.bind("<Control-h>", lambda e: self._show_shortcuts_help())
+        # Arrow keys walk the photos, like Prev and Next
+        self.root.bind("<Left>",  self._ss_arrow_step)
+        self.root.bind("<Right>", self._ss_arrow_step)
 
         self._show_ss_photo()
 
@@ -2490,6 +2493,7 @@ class PhotosEditor:
             return
         self._ss_load_gen += 1              # invalidate any in-flight record load
         self._ss_face_hl_ids = []
+        self._ss_set_busy(False)            # while the canvas is still there
         self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
         self._ss_review_frame = None
         # Reset editor state that pointed into the destroyed widgets; the next
@@ -2501,7 +2505,8 @@ class PhotosEditor:
         self._photo_edited = False
 
         for seq in ("<Control-u>", "<Control-s>", "<Control-y>", "<Control-i>",
-                    "<Control-l>", "<Control-L>", "<Control-n>", "<Control-h>"):
+                    "<Control-l>", "<Control-L>", "<Control-n>", "<Control-h>",
+                    "<Left>", "<Right>"):
             self.root.unbind(seq)
         self.root.bind("<Control-z>", self._on_ctrl_z)   # back to drag-drop undo
 
@@ -2593,17 +2598,26 @@ class PhotosEditor:
 
         for c, col in enumerate(columns, start=1):
             head = tk.Frame(grid, bg=bg)
-            head.grid(row=HEAD, column=c, sticky="ew", padx=(10, 0))
+            # Left-aligned, so the ✕ sits beside the heading instead of being
+            # pushed out to the far edge of the column
+            head.grid(row=HEAD, column=c, sticky="w", padx=(10, 0))
             tk.Label(head, text=_ss_column_heading(col), bg=bg,
                      font=("TkDefaultFont", 9, "bold"),
                      fg=_SS_USER_TEXT_FG if col["editor"] else "gray",
                      anchor="w").pack(side="left")
-            # Dismissing one report: mark it done and let the rest close up
-            tk.Button(head, text="✕", bg=bg, relief="flat", bd=0,
-                      padx=4, cursor="hand2",
-                      font=("TkDefaultFont", 8),
-                      command=lambda cc=col: self._ss_dismiss_column(cc)).pack(
-                          side="right")
+            # Dismissing one report: mark it done and let the rest close up.
+            # A Label rather than a Button: a Button's own chrome cannot be
+            # trimmed below about 23x21, and the box wanted here is 16x16 --
+            # the same ✕ in a quarter less room.
+            x_box = tk.Label(head, text="✕", bg=bg, relief="solid", bd=1,
+                             padx=1, pady=0, highlightthickness=0,
+                             cursor="hand2", font=("TkDefaultFont", 8))
+            x_box.pack(side="left", padx=(5, 0))
+            x_box.bind("<Button-1>",
+                       lambda e, cc=col: self._ss_dismiss_column(cc))
+            _Tooltip(lambda: "Done with this report: mark it reviewed in the "
+                             "SlideShow log\nand close its column.  The other "
+                             "reports on this photo stay.").attach(x_box)
 
             comment = col["comment"]
             if comment:
@@ -2697,10 +2711,12 @@ class PhotosEditor:
         self._ss_load_gen += 1
         pid = rec.get("photo id")
         if pid is None:
+            self._ss_set_busy(False)
             self.photo_label_var.set("No photo selected")
             self.set_status("These reports carry no Piwigo photo id — "
                             "the photo cannot be loaded.")
             return
+        self._ss_set_busy(True)         # fetching it can take a noticeable while
         threading.Thread(target=self._ss_worker_load_photo,
                          args=(self._ss_rows, int(pid), self._ss_load_gen),
                          daemon=True).start()
@@ -2746,7 +2762,13 @@ class PhotosEditor:
         self._ss_face_hl_ids = []
 
     def _ss_step(self, delta: int):
-        """Prev and Next move a whole photo at a time, reports and all."""
+        """Prev and Next move a whole photo at a time, reports and all.
+
+        Moving on settles nothing: the reports here keep whatever done status
+        they already had, so a photo passed over comes round again.  Only work
+        typed into the editor and not yet uploaded is at risk, and that is what
+        _ss_confirm_discard asks about.
+        """
         new = self._ss_group_index + delta
         if not (0 <= new < len(self._ss_groups)):
             return
@@ -2754,6 +2776,29 @@ class PhotosEditor:
             return
         self._ss_group_index = new
         self._show_ss_photo()
+
+    # Widgets that use the arrow keys themselves; stepping photos would steal them
+    _TEXT_ENTRY_CLASSES = ("Entry", "TEntry", "Text", "TCombobox", "Spinbox",
+                           "TSpinbox", "Listbox")
+
+    def _ss_arrow_step(self, event):
+        """Left and Right walk the photos -- unless the caret is in a field,
+        where the arrows have to keep moving it."""
+        focus = self.root.focus_get()
+        if focus is not None and focus.winfo_class() in self._TEXT_ENTRY_CLASSES:
+            return
+        self._ss_step(-1 if event.keysym == "Left" else +1)
+        return "break"
+
+    def _ss_set_busy(self, busy: bool):
+        """A wait cursor while a photo is being fetched from Piwigo.  The photo
+        canvas carries its own cursor, so it has to be told separately."""
+        try:
+            self.root.config(cursor="watch" if busy else "")
+            self.canvas.config(cursor="watch" if busy else "crosshair")
+            self.root.update_idletasks()        # show it before the wait begins
+        except tk.TclError:
+            pass                                # the window is on its way out
 
     def _ss_mark_records_done(self, records: list) -> "tuple[bool, Path|None]":
         """Write done into the log for each of these records.
@@ -2902,8 +2947,11 @@ class PhotosEditor:
                 _logout(client)
 
             def _apply(info=info, img=img, scale=scale):
+                # A superseded load leaves the cursor alone: the load that
+                # replaced it is still running and will clear it when it lands
                 if gen != self._ss_load_gen or self._ss_review_frame is None:
                     return
+                self._ss_set_busy(False)
                 self._on_thumb_click(info)      # load the editor side
                 if img is not None:
                     # The labels were built from these same rows, in this order
@@ -2928,7 +2976,8 @@ class PhotosEditor:
             logger.warning(f"Could not load photo {photo_id} for SS review: {e}")
             self.root.after(0, lambda e=e: (
                 gen == self._ss_load_gen and self._ss_review_frame is not None and
-                self.set_status(f"Could not load photo {photo_id}: {e}")))
+                (self._ss_set_busy(False),
+                 self.set_status(f"Could not load photo {photo_id}: {e}"))))
 
     # -----------------------------------------------------------------------
     # Unified thumbnail press / motion / release  (both sides, click + drag)
