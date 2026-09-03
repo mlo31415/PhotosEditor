@@ -644,6 +644,33 @@ class _Tooltip:
                  font=("TkDefaultFont", 9), padx=6, pady=4).pack()
 
 
+# Python's tempfile names are "tmp" and eight characters from [a-z0-9_].  A
+# photo stored on Piwigo under one of those got it from an upload that sent a
+# tempfile, back when PhotosEditor did that -- the real name is in its title.
+_TEMP_UPLOAD_NAME=re.compile(r"^tmp[a-z0-9_]{8}(\.|$)", re.IGNORECASE)
+
+
+def _looks_like_temp_upload_name(name: str) -> bool:
+    return bool(_TEMP_UPLOAD_NAME.match(name or ""))
+
+
+def _real_photo_filename(img_dict: dict, image_id) -> str:
+    """The name to send this photo back to Piwigo under.
+
+    Its stored file name, except when that is a tempfile's: the title kept the
+    real one, and uploading under the temp name again would overwrite the last
+    copy of it.  The extension is kept from the stored name, since a title
+    often has none.
+    """
+    stored = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
+    if not _looks_like_temp_upload_name(stored):
+        return stored
+    title = (img_dict.get("name") or "").strip()
+    if not title or _looks_like_temp_upload_name(title):
+        return stored                       # nothing better survived
+    return os.path.splitext(title)[0]+os.path.splitext(stored)[1]
+
+
 def _changed_field_labels(loaded: dict, now: dict, labels: dict) -> list:
     """Human labels of the custom fields that differ from how they loaded.
 
@@ -4106,11 +4133,16 @@ class PhotosEditor:
 
         img_dict = self._current_image_dict
         image_id = img_dict.get("id")
-        fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
+        fname    = _real_photo_filename(img_dict, image_id)
 
         if not self._confirm_upload_allowed(
-                f'This would upload "{fname}" and its details to Piwigo.'):
-            self.set_status("Upload cancelled — uploading is turned off.")
+                f'This would upload "{self._photo_label()}" and its details to Piwigo.'):
+            # Pressing Upload and being told no is an answer about this work, not
+            # a postponement of it: settle it here, exactly as a real upload
+            # would, so that moving to the next photo does not ask about it again.
+            self._work_settled()
+            self.set_status("Upload cancelled — uploading is turned off, "
+                            "and the changes have been dropped.")
             return
 
         # Uploading an untouched photo re-encodes it and rewrites its metadata for
@@ -4210,8 +4242,7 @@ class PhotosEditor:
 
         def finish_ok(uploaded_file: bool):
             close_dlg()
-            self._photo_edited  = False
-            self._loaded_fields = self._editor_field_values()   # this is the new baseline
+            self._work_settled()
             if uploaded_file:
                 self._refresh_current_thumbnail()
             self.set_status(f"Uploaded: {fname}" if uploaded_file
@@ -4250,12 +4281,17 @@ class PhotosEditor:
                     self.root.after(0, lambda: finish_ok(uploaded_file=False))
                     return
 
-                # Save edited PIL image to a temp JPEG
+                # Save the edited image to a temp file that still carries the
+                # photo's own name: Piwigo stores the name of the file it is
+                # sent, so uploading a tempfile-named one would rename the photo
+                # on the server to something like "tmp2qfmcfwp.jpg".  A private
+                # directory gives it the real name without risking a collision.
                 set_stage("Saving edited image…")
                 stem, ext = os.path.splitext(fname)
                 suffix = ext if ext.lower() in ('.jpg', '.jpeg') else '.jpg'
-                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
-                    temp_path = tf.name
+                temp_dir  = tempfile.mkdtemp()
+                temp_path = os.path.join(temp_dir,
+                                         _sanitize_filename(stem) + suffix)
                 img = pil_snapshot
                 if img.mode not in ('RGB', 'L'):
                     img = img.convert('RGB')
@@ -4324,7 +4360,7 @@ class PhotosEditor:
                 self._end_server_op(sop)
                 if temp_path:
                     try:
-                        Path(temp_path).unlink()
+                        shutil.rmtree(Path(temp_path).parent, ignore_errors=True)
                     except Exception:
                         pass
 
@@ -4881,14 +4917,13 @@ class PhotosEditor:
         fields       = self._unsaved_field_labels()
         if not (photo_edited or fields):
             return True
+        name = self._photo_label()
 
         parts = []
         if photo_edited:
             parts.append("the photo itself has been edited")
         if fields:
             parts.append("changes to " + ", ".join(fields))
-        name = ((self._current_image_dict or {}).get("file")
-                or (self._current_image_dict or {}).get("name") or "this photo")
 
         if not messagebox.askyesno(
                 "Not Uploaded Yet",
@@ -4897,9 +4932,27 @@ class PhotosEditor:
                 f"{action} without uploading?",
                 icon="warning", parent=parent or self.root):
             return False
+        self._work_settled()
+        return True
+
+    def _photo_label(self) -> str:
+        """What to call the photo on screen.
+
+        The stored file name normally, the title when that is a tempfile's:
+        a photo whose pixels an older PhotosEditor uploaded is stored as
+        "tmp2qfmcfwp.JPG", and only its title still says what it really is.
+        """
+        img = self._current_image_dict or {}
+        stored = img.get("file") or ""
+        if stored and not _looks_like_temp_upload_name(stored):
+            return stored
+        return img.get("name") or stored or "this photo"
+
+    def _work_settled(self):
+        """This photo's edits are dealt with, whether by uploading them or by
+        deciding against it.  Nothing further should ask about them."""
         self._photo_edited  = False
         self._loaded_fields = self._editor_field_values()
-        return True
 
     def _confirm_upload_allowed(self, what: str, parent=None) -> bool:
         """Gate an operation that would change Piwigo.  True to let it through.
