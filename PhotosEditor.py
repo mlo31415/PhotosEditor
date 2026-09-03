@@ -363,6 +363,97 @@ def _collect_ss_records(directory: Path) -> list[dict]:
             [rec for g in groups if len(g) == 1 for rec in g])
 
 
+def _ss_group_by_photo(records: list) -> list:
+    """The records, gathered into one list per photo, keeping the order they
+    arrived in.  _collect_ss_records already puts a photo's records together,
+    so this only has to notice where one photo ends and the next begins."""
+    groups: list = []
+    index: dict = {}
+    for i, rec in enumerate(records):
+        pid = rec.get("photo id")
+        key = pid if pid is not None else f"\0no id {i}"    # never grouped
+        if key in index:
+            groups[index[key]].append(rec)
+        else:
+            index[key] = len(groups)
+            groups.append([rec])
+    return groups
+
+
+def _ss_face_key(face: dict):
+    """What makes one detected face the same face across reports.  SlideShow's
+    detection is deterministic, so the box matches exactly; the number is only
+    a fallback for a record written without one."""
+    box = face.get("box")
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            return ("box",) + tuple(int(v) for v in box)
+        except (TypeError, ValueError):
+            pass
+    return ("number", face.get("number"))
+
+
+def _ss_face_rows(group: list) -> list:
+    """Every face detected in this photo, in the order SlideShow found them
+    (left to right), as {key, number, box}.
+
+    Built from all the reports together: if one report were written against a
+    different detection than another, the faces only it saw still get a row
+    rather than being dropped.
+    """
+    rows: list = []
+    seen: dict = {}
+    for rec in group:
+        for i, face in enumerate(rec.get("faces") or []):
+            key = _ss_face_key(face)
+            if key in seen:
+                continue
+            seen[key] = True
+            rows.append({"key":    key,
+                         "number": face.get("number", i + 1),
+                         "box":    face.get("box")})
+    return rows
+
+
+def _ss_report_columns(group: list) -> list:
+    """One column per review report worth showing.
+
+    Reports saying nothing at all -- no names, no comment -- are left out, and
+    reports saying exactly the same thing are collapsed into a single column
+    carrying all of their records, so that duplicate submissions do not eat the
+    width needed for genuinely differing opinions.
+    """
+    columns: list = []
+    by_content: dict = {}
+    for rec in group:
+        names = {}
+        for i, face in enumerate(rec.get("faces") or []):
+            name = (face.get("name") or "").strip()
+            if name:
+                names[_ss_face_key(face)] = name
+        comment = (rec.get("comment") or "").strip()
+        if not names and not comment:
+            continue                      # nothing to show, but still to be marked done
+        editor = (rec.get("editor") or "").strip()
+        content = (editor, comment, tuple(sorted(names.items())))
+        if content in by_content:
+            by_content[content]["records"].append(rec)
+            continue
+        col = {"records": [rec], "editor": editor, "comment": comment,
+               "names": names, "saved": rec.get("saved", "")}
+        by_content[content] = col
+        columns.append(col)
+    return columns
+
+
+def _ss_column_heading(column: dict) -> str:
+    """Who sent this report -- their email, or when it arrived if they left it
+    blank -- with a count when identical reports were collapsed."""
+    who = column.get("editor") or column.get("saved") or "(unknown)"
+    n = len(column.get("records") or [])
+    return f"{who}  ×{n}" if n > 1 else who
+
+
 def _round_face_thumb(img: "Image.Image", box, bg: "str | tuple", size: int = 64) -> "ImageTk.PhotoImage":
     """A round thumbnail of the face at box (x, y, w, h), exactly as SlideShow
     cuts it for its Identify Photo table -- the cutting itself is the shared
@@ -941,8 +1032,10 @@ class PhotosEditor:
 
         # ── Review SS Comments mode state ───────────────────────────────────
         self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
-        self._ss_records:      list = []    # unreviewed records, multi-record photos first
-        self._ss_rec_index:    int  = 0
+        self._ss_groups:       list = []    # unreviewed records, one list per photo
+        self._ss_group_index:  int  = 0
+        self._ss_rows:         list = []    # faces of the photo under review
+        self._ss_columns:      list = []    # its reports, as shown
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
@@ -2360,8 +2453,9 @@ class PhotosEditor:
         self._editor_dlg   = None
         self._photo_edited = False
 
-        self._ss_records   = records
-        self._ss_rec_index = 0
+        # All the reports on one photo are reviewed together, so work by photo
+        self._ss_groups      = _ss_group_by_photo(records)
+        self._ss_group_index = 0
 
         self._main_pane.pack_forget()
         self._zoom_btn.config(state="disabled")
@@ -2389,7 +2483,7 @@ class PhotosEditor:
         self.root.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
         self.root.bind("<Control-h>", lambda e: self._show_shortcuts_help())
 
-        self._show_ss_record()
+        self._show_ss_photo()
 
     def _exit_ss_review(self):
         if not self._ss_confirm_discard():
@@ -2421,169 +2515,194 @@ class PhotosEditor:
         return self._confirm_discard_edits()
 
     def _build_ss_record_panel(self, parent: ttk.LabelFrame):
-        self._ss_pos_var = tk.StringVar()
-        ttk.Label(parent, textvariable=self._ss_pos_var,
-                  font=("TkDefaultFont", 9, "italic")).pack(anchor="w")
-
+        """The reports on one photo, side by side: a row per detected face, a
+        column per report, and each report's name for that face where they meet."""
         # Everything the SS user typed is shown bold red; labels and anything SS
         # derived for itself (times, album path, file names) stay plain.
         bold = tkfont.nametofont("TkDefaultFont").copy()
         bold.configure(weight="bold")
         self._ss_bold_font = bold
 
-        # Whoever proposed these corrections -- SlideShow's "editor" -- heads the record
-        source_row = ttk.Frame(parent)
-        source_row.pack(anchor="w", pady=(8, 0))
-        ttk.Label(source_row, text="Input from:",
-                  font=("TkDefaultFont", 11)).pack(side="left")
-        self._ss_source_var = tk.StringVar()
-        ttk.Label(source_row, textvariable=self._ss_source_var,
-                  font=("TkDefaultFont", 11, "bold"),
-                  foreground=_SS_USER_TEXT_FG).pack(side="left", padx=(5, 0))
+        album_row = ttk.Frame(parent)
+        album_row.pack(fill="x")
+        ttk.Label(album_row, text="Album:").pack(side="left", padx=(0, 6))
+        self._ss_album_var = tk.StringVar()
+        ttk.Label(album_row, textvariable=self._ss_album_var, wraplength=460,
+                  anchor="w", justify="left").pack(side="left")
 
-        self._ss_field_vars = {}
+        self._ss_count_var = tk.StringVar()
+        ttk.Label(parent, textvariable=self._ss_count_var,
+                  font=("TkDefaultFont", 9, "italic")).pack(anchor="w", pady=(2, 0))
 
-        def add_field_rows(container, fields):
-            for row, (label, key) in enumerate(fields):
-                ttk.Label(container, text=f"{label}:").grid(row=row, column=0,
-                                                            sticky="nw", padx=(0, 6))
-                var = tk.StringVar()
-                opts = {"textvariable": var, "wraplength": 380,
-                        "anchor": "w", "justify": "left"}
-                if key in _SS_USER_TYPED_FIELDS:
-                    opts["font"]       = bold
-                    opts["foreground"] = _SS_USER_TEXT_FG
-                ttk.Label(container, **opts).grid(row=row, column=1, sticky="w")
-                self._ss_field_vars[key] = var
-
-        info = ttk.Frame(parent)
-        info.pack(fill="x", pady=(6, 0))
-        add_field_rows(info, (("Album", "album"), ("Photo date", "photo date")))
-
-        ttk.Label(parent, text="Comments and Corrections").pack(anchor="w", pady=(10, 2))
-        self._ss_comment_text = tk.Text(parent, height=5, wrap="word",
-                                        state="disabled",
-                                        font=("TkDefaultFont", 10, "bold"),
-                                        fg=_SS_USER_TEXT_FG)
-        self._ss_comment_text.pack(fill="x")
-
-        ttk.Label(parent, text="Faces").pack(anchor="w", pady=(10, 2))
-        holder = ttk.Frame(parent)
-        holder.pack(fill="both", expand=True)
         bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
         self._ss_faces_bg = bg
         # PIL can't parse Tk system color names like "SystemButtonFace" --
         # convert once to an RGB tuple for the thumbnail compositing
         r16, g16, b16 = parent.winfo_rgb(bg)
         self._ss_faces_bg_rgb = (r16 // 256, g16 // 256, b16 // 256)
-        canvas = tk.Canvas(holder, highlightthickness=0, bg=bg)
-        scroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+
+        # The matrix scrolls both ways: down when a photo has more faces than
+        # fit, across when it has more reports than fit.
+        holder = ttk.Frame(parent)
+        holder.pack(fill="both", expand=True, pady=(8, 0))
+        canvas  = tk.Canvas(holder, highlightthickness=0, bg=bg)
+        vscroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
+        hscroll = ttk.Scrollbar(holder, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
+        vscroll.grid(row=0, column=1, sticky="ns")
+        hscroll.grid(row=1, column=0, sticky="ew")
+        canvas.grid(row=0, column=0, sticky="nsew")
+        holder.rowconfigure(0, weight=1)
+        holder.columnconfigure(0, weight=1)
         inner = tk.Frame(canvas, bg=bg)
         canvas.create_window((0, 0), window=inner, anchor="nw")
-        # Wheel scrolling only while the pointer is over the faces list
         canvas.bind("<Enter>", lambda e: canvas.bind_all(
             "<MouseWheel>", lambda ev: canvas.yview_scroll(
                 -1 if ev.delta > 0 else 1, "units")))
         canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-        self._ss_faces_canvas = canvas
-        self._ss_faces_frame  = inner
+        self._ss_matrix_canvas = canvas
+        self._ss_matrix_frame  = inner
+        self._ss_hscroll       = hscroll
 
         nav = ttk.Frame(parent)
         nav.pack(pady=10)
-        self._ss_prev_btn = ttk.Button(nav, text="◀ Prev",
+        self._ss_prev_btn = ttk.Button(nav, text="◀ Prev photo",
                                        command=lambda: self._ss_step(-1))
-        self._ss_next_btn = ttk.Button(nav, text="Next ▶",
+        self._ss_next_btn = ttk.Button(nav, text="Next photo ▶",
                                        command=lambda: self._ss_step(+1))
-        self._ss_skip_btn = ttk.Button(
-            nav, text="Skip",
-            command=lambda: self._ss_mark_done(discard_fields=True))
+        self._ss_skip_btn = ttk.Button(nav, text="Skip photo",
+                                       command=self._ss_skip_photo)
         self._ss_prev_btn.pack(side="left", padx=4)
         self._ss_next_btn.pack(side="left", padx=4)
         self._ss_skip_btn.pack(side="left", padx=(16, 4))
 
-        # Bookkeeping -- where the record came from -- sits out of the way at the foot
-        footer = ttk.Frame(parent)
-        footer.pack(fill="x", pady=(6, 0))
-        add_field_rows(footer, (("Saved", "saved"), ("Log", "_log file")))
+    # ── The face-row / report-column matrix ──────────────────────────────────
+    _SS_COL_WIDTH   = 22        # characters; a name is rarely longer
+    _SS_COMMENT_MAX = 6         # lines of comment before the font starts shrinking
 
-    def _show_ss_record(self):
-        rec = self._ss_records[self._ss_rec_index]
-        # Blank the editor side at once: it must not keep showing the previous
-        # record's photo while this one is fetched from Piwigo
-        self._clear_editor()
-        self._ss_face_hl_ids = []       # _clear_editor wiped the canvas
-        self.photo_label_var.set("Loading…")
-        # Records for one photo sit together; say so, so they can be handled as a set
-        pid  = rec.get("photo id")
-        same = ([r for r in self._ss_records if r.get("photo id") == pid]
-                if pid is not None else [rec])
-        pos = f"Record {self._ss_rec_index + 1} of {len(self._ss_records)}"
-        if len(same) > 1:
-            pos += (f"   —   comment {same.index(rec) + 1} of {len(same)} "
-                    f"on this photo")
-        self._ss_pos_var.set(pos)
-        self._ss_source_var.set(
-            str(rec.get("editor") or "").strip() or "(unknown)")
-        for key, var in self._ss_field_vars.items():
-            var.set(str(rec.get(key) or ""))
-        self._ss_comment_text.config(state="normal")
-        self._ss_comment_text.delete("1.0", "end")
-        self._ss_comment_text.insert("1.0", str(rec.get("comment") or ""))
-        self._ss_comment_text.config(state="disabled")
-        self._ss_prev_btn.config(
-            state="normal" if self._ss_rec_index > 0 else "disabled")
-        self._ss_next_btn.config(
-            state="normal" if self._ss_rec_index < len(self._ss_records) - 1
-            else "disabled")
-
-        # Rebuild the face rows (thumbnails arrive later, from the worker)
+    def _ss_build_matrix(self, rows: list, columns: list):
+        """Lay out the current photo's faces against its reports."""
         bg = self._ss_faces_bg
-        for w in self._ss_faces_frame.winfo_children():
+        for w in self._ss_matrix_frame.winfo_children():
             w.destroy()
-        self._ss_face_thumbs = []           # keeps PhotoImage references alive
-        self._ss_face_labels = []
-        faces = rec.get("faces") or []
-        if not faces:
-            tk.Label(self._ss_faces_frame, text="(No faces in this record)",
-                     fg="gray", bg=bg).grid(row=0, column=0, padx=4, pady=4)
-        for i, face in enumerate(faces):
-            number = face.get("number", i + 1)
-            name   = (face.get("name") or "").strip()
-            tk.Label(self._ss_faces_frame, text=f"#{number}", bg=bg,
-                     font=("TkDefaultFont", 10)).grid(row=i, column=0,
+        self._ss_face_thumbs = []       # keeps PhotoImage references alive
+        self._ss_face_labels = []       # one per face row, filled in by the worker
+
+        grid = self._ss_matrix_frame
+        HEAD, COMMENT, FIRST = 0, 1, 2  # row numbers of the two header rows
+
+        for c, col in enumerate(columns, start=1):
+            head = tk.Frame(grid, bg=bg)
+            head.grid(row=HEAD, column=c, sticky="ew", padx=(10, 0))
+            tk.Label(head, text=_ss_column_heading(col), bg=bg,
+                     font=("TkDefaultFont", 9, "bold"),
+                     fg=_SS_USER_TEXT_FG if col["editor"] else "gray",
+                     anchor="w").pack(side="left")
+            # Dismissing one report: mark it done and let the rest close up
+            tk.Button(head, text="✕", bg=bg, relief="flat", bd=0,
+                      padx=4, cursor="hand2",
+                      font=("TkDefaultFont", 8),
+                      command=lambda cc=col: self._ss_dismiss_column(cc)).pack(
+                          side="right")
+
+            comment = col["comment"]
+            if comment:
+                # A long comment gets a smaller font rather than a taller row
+                lines = 1 + len(comment) // self._SS_COL_WIDTH
+                size  = 9 if lines <= self._SS_COMMENT_MAX else (
+                        8 if lines <= self._SS_COMMENT_MAX * 2 else 7)
+                tk.Message(grid, text=comment, bg=bg, fg=_SS_USER_TEXT_FG,
+                           font=("TkDefaultFont", size),
+                           width=self._SS_COL_WIDTH * 7, anchor="nw",
+                           justify="left").grid(row=COMMENT, column=c,
+                                                sticky="new", padx=(10, 0))
+
+        if not columns:
+            tk.Label(grid, text="(no identifications in these reports)",
+                     bg=bg, fg="gray").grid(row=HEAD, column=1, padx=(10, 0),
+                                            sticky="w")
+
+        for r, face in enumerate(rows):
+            row = FIRST + r
+            tk.Label(grid, text=f"#{face['number']}", bg=bg,
+                     font=("TkDefaultFont", 10)).grid(row=row, column=0,
                                                       sticky="e", padx=(0, 6))
-            thumb_lbl = tk.Label(self._ss_faces_frame, text="…", bg=bg,
-                                 width=9, fg="gray")
-            thumb_lbl.grid(row=i, column=1, padx=(0, 10), pady=3)
-            # Hovering a thumbnail rings that face on the photo -- the way to
-            # pick one face out of a crowded photograph
+            thumb_lbl = tk.Label(grid, text="…", bg=bg, width=9, fg="gray")
+            thumb_lbl.grid(row=row, column=0, sticky="w", padx=(26, 10), pady=3)
+            # Hovering a thumbnail rings that face on the photo
             box = face.get("box")
             thumb_lbl.bind("<Enter>", lambda e, b=box: self._ss_highlight_face(b))
             thumb_lbl.bind("<Leave>", self._ss_clear_face_highlight)
             self._ss_face_labels.append(thumb_lbl)
-            tk.Label(self._ss_faces_frame,
-                     text=name if name else "(unnamed)", bg=bg,
-                     fg=_SS_USER_TEXT_FG if name else "gray",
-                     font=("TkDefaultFont", 11, "bold") if name
-                     else ("TkDefaultFont", 11)).grid(row=i, column=2, sticky="w")
-        self._ss_faces_frame.update_idletasks()
-        self._ss_faces_canvas.configure(
-            scrollregion=self._ss_faces_canvas.bbox("all") or (0, 0, 0, 0))
-        self._ss_faces_canvas.yview_moveto(0)
+
+            for c, col in enumerate(columns, start=1):
+                name = col["names"].get(face["key"], "")
+                tk.Label(grid, text=name or "—", bg=bg,
+                         fg=_SS_USER_TEXT_FG if name else "#b0b0b0",
+                         font=("TkDefaultFont", 11, "bold") if name
+                         else ("TkDefaultFont", 11),
+                         anchor="w", width=self._SS_COL_WIDTH).grid(
+                             row=row, column=c, sticky="w", padx=(10, 0))
+
+        if not rows:
+            tk.Label(grid, text="(no faces were detected in this photo)",
+                     bg=bg, fg="gray").grid(row=FIRST, column=0, columnspan=2,
+                                            sticky="w", pady=4)
+
+        grid.update_idletasks()
+        canvas = self._ss_matrix_canvas
+        canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
+        canvas.yview_moveto(0)
+        canvas.xview_moveto(0)
+        # The sideways scrollbar earns its space only when there is overflow
+        if grid.winfo_reqwidth() > canvas.winfo_width():
+            self._ss_hscroll.grid()
+        else:
+            self._ss_hscroll.grid_remove()
+
+    @property
+    def _ss_group(self) -> list:
+        """The records for the photo under review."""
+        if 0 <= self._ss_group_index < len(self._ss_groups):
+            return self._ss_groups[self._ss_group_index]
+        return []
+
+    def _show_ss_photo(self):
+        group = self._ss_group
+        if not group:
+            return
+        rec = group[0]                  # the album and photo id are the same for all
+        # Blank the editor side at once: it must not keep showing the previous
+        # photo while this one is fetched from Piwigo
+        self._clear_editor()
+        self._ss_face_hl_ids = []       # _clear_editor wiped the canvas
+        self.photo_label_var.set("Loading…")
+
+        self._ss_album_var.set(str(rec.get("album") or ""))
+        n_reports = len(group)
+        self._ss_count_var.set(
+            f"Photo {self._ss_group_index + 1} of {len(self._ss_groups)}"
+            f"   —   {n_reports} report{'s' if n_reports != 1 else ''}")
+        self._ss_prev_btn.config(
+            state="normal" if self._ss_group_index > 0 else "disabled")
+        self._ss_next_btn.config(
+            state="normal" if self._ss_group_index < len(self._ss_groups) - 1
+            else "disabled")
+
+        self._ss_rows    = _ss_face_rows(group)
+        self._ss_columns = _ss_report_columns(group)
+        self._ss_build_matrix(self._ss_rows, self._ss_columns)
 
         # Load the photo: the editor side by id, and the face thumbnails from it
         self._ss_load_gen += 1
         pid = rec.get("photo id")
         if pid is None:
             self.photo_label_var.set("No photo selected")
-            self.set_status("This record has no Piwigo photo id — "
+            self.set_status("These reports carry no Piwigo photo id — "
                             "the photo cannot be loaded.")
             return
         threading.Thread(target=self._ss_worker_load_photo,
-                         args=(rec, int(pid), self._ss_load_gen),
+                         args=(self._ss_rows, int(pid), self._ss_load_gen),
                          daemon=True).start()
 
     # ── Ringing the hovered face on the photo ────────────────────────────────
@@ -2593,9 +2712,9 @@ class PhotosEditor:
         record's, unedited and loaded -- the logged boxes are in the original
         photo's coordinates, which a crop or rotate would invalidate."""
         self._ss_clear_face_highlight()
-        if self._ss_review_frame is None or not self._ss_records:
+        if self._ss_review_frame is None or not self._ss_group:
             return
-        rec = self._ss_records[self._ss_rec_index]
+        rec = self._ss_group[0]
         img = self._current_image_dict
         if (img is None or self._viewer_image is None
                 or self._photo_display_rect is None
@@ -2627,65 +2746,112 @@ class PhotosEditor:
         self._ss_face_hl_ids = []
 
     def _ss_step(self, delta: int):
-        new = self._ss_rec_index + delta
-        if not (0 <= new < len(self._ss_records)):
+        """Prev and Next move a whole photo at a time, reports and all."""
+        new = self._ss_group_index + delta
+        if not (0 <= new < len(self._ss_groups)):
             return
         if not self._ss_confirm_discard():
             return
-        self._ss_rec_index = new
-        self._show_ss_record()
+        self._ss_group_index = new
+        self._show_ss_photo()
 
-    def _ss_mark_done(self, discard_fields: bool = False):
-        """Mark the record under review done and move to the next.
+    def _ss_mark_records_done(self, records: list) -> "tuple[bool, Path|None]":
+        """Write done into the log for each of these records.
 
-        discard_fields is set by Skip: whatever was typed into the editor is
-        thrown away rather than remembered, so it cannot reappear when this
-        photo turns up in another record.  An upload leaves the fields alone --
-        they are what was just saved to Piwigo.
+        Returns (all_marked, completed_log).  A record that cannot be found is
+        reported and left alone rather than being dropped silently.
         """
-        if not self._ss_confirm_discard():
-            return
-        rec = self._ss_records[self._ss_rec_index]
+        review_dir = self._state.get("ss_review_dir", "")
         # An unset folder would make this Path(""), the working directory, where
         # the record certainly is not -- say so rather than searching the wrong place
-        review_dir = self._state.get("ss_review_dir", "")
         if not review_dir or not Path(review_dir).is_dir():
             messagebox.showwarning(
                 "Review SS Comments",
                 "The SlideShow output folder is not set, or is no longer "
-                "reachable, so this record cannot be marked done.",
-                parent=self.root)
-            return
-        found, completed = _ss_mark_record_done_in_log(Path(review_dir), rec)
-        if not found:
+                "reachable, so nothing can be marked done.", parent=self.root)
+            return False, None
+
+        completed, missing = None, []
+        for rec in records:
+            found, done_log = _ss_mark_record_done_in_log(Path(review_dir), rec)
+            if found:
+                rec["done"] = True
+                completed = done_log or completed
+            else:
+                missing.append(rec)
+        if missing:
             messagebox.showwarning(
                 "Review SS Comments",
-                "This record could not be found in the SlideShow logs, so it "
-                "has not been marked done.\n\nHas the log been moved or "
-                "rewritten while the review was open?", parent=self.root)
+                f"{len(missing)} of these reports could not be found in the "
+                "SlideShow logs, so they have not been marked done.\n\nHas a "
+                "log been moved or rewritten while the review was open?",
+                parent=self.root)
+        return not missing, completed
+
+    def _ss_after_marking(self, completed):
+        """Move on once some reports have been dealt with: drop the ones now
+        done, and advance when a photo has none left."""
+        group = self._ss_group
+        group[:] = [r for r in group if not r.get("done")]
+        if group:                       # reports remain: redraw this photo
+            self._ss_rows    = _ss_face_rows(group)
+            self._ss_columns = _ss_report_columns(group)
+            self._ss_build_matrix(self._ss_rows, self._ss_columns)
+            n = len(group)
+            self._ss_count_var.set(
+                f"Photo {self._ss_group_index + 1} of {len(self._ss_groups)}"
+                f"   —   {n} report{'s' if n != 1 else ''}")
+            if completed is not None:
+                self.set_status(f'Log finished — renamed "{completed.name}".')
             return
-        rec["done"] = True
-        if discard_fields:
-            # _ss_confirm_discard has just stashed the typed fields against this
-            # photo; skipping means they were not wanted, so drop them and wipe
-            # the editor (which _show_ss_record would only do if a record remains)
-            self.custom_data.pop((self._current_image_dict or {}).get("id"), None)
-            self._clear_editor()
-        del self._ss_records[self._ss_rec_index]
-        if not self._ss_records:
+
+        del self._ss_groups[self._ss_group_index]
+        if not self._ss_groups:
             messagebox.showinfo("Review SS Comments",
-                                "All records have been reviewed.",
+                                "All reports have been reviewed.",
                                 parent=self.root)
             self._exit_ss_review()
             return
-        self._ss_rec_index = min(self._ss_rec_index, len(self._ss_records) - 1)
-        self._show_ss_record()
-        if completed is not None:       # after _show_ss_record, which sets status
+        self._ss_group_index = min(self._ss_group_index, len(self._ss_groups) - 1)
+        self._show_ss_photo()
+        if completed is not None:       # after _show_ss_photo, which sets status
             self.set_status(f'Log finished — renamed "{completed.name}".')
 
-    def _ss_worker_load_photo(self, rec: dict, photo_id: int, gen: int):
-        """Fetch the record's photo info (for the editor) and, when the record
-        has faces, the original image (for the face thumbnails)."""
+    def _ss_dismiss_column(self, column: dict):
+        """The ✕ on a column: that report is dealt with.  Its records are marked
+        done and the column goes, the rest closing up to the left."""
+        if not self._ss_confirm_discard():
+            return
+        _, completed = self._ss_mark_records_done(column.get("records") or [])
+        self._ss_after_marking(completed)
+
+    def _ss_skip_photo(self):
+        """Skip: nothing here is wanted.  Every report on this photo is marked
+        done and the next photo comes up."""
+        if not self._ss_confirm_discard():
+            return
+        # Skipping means the typing was not wanted: forget it, so it cannot come
+        # back if this photo turns up again
+        self.custom_data.pop((self._current_image_dict or {}).get("id"), None)
+        _, completed = self._ss_mark_records_done(list(self._ss_group))
+        self._clear_editor()
+        self._ss_after_marking(completed)
+
+    def _ss_mark_done(self, discard_fields: bool = False):
+        """Every report on this photo is settled -- called after an upload, the
+        corrections having been applied."""
+        if not self._ss_confirm_discard():
+            return
+        if discard_fields:
+            self.custom_data.pop((self._current_image_dict or {}).get("id"), None)
+            self._clear_editor()
+        _, completed = self._ss_mark_records_done(list(self._ss_group))
+        self._ss_after_marking(completed)
+
+    def _ss_worker_load_photo(self, rows: list, photo_id: int, gen: int):
+        """Fetch the photo's info (for the editor) and, when faces were
+        detected, an image to cut the row thumbnails from."""
+        rec = {"faces": rows}       # the worker only asks whether there are faces
         try:
             creds  = _store.load_credentials()
             params = _store.load_op_params()
@@ -2740,8 +2906,8 @@ class PhotosEditor:
                     return
                 self._on_thumb_click(info)      # load the editor side
                 if img is not None:
-                    for lbl, face in zip(self._ss_face_labels,
-                                         rec.get("faces") or []):
+                    # The labels were built from these same rows, in this order
+                    for lbl, face in zip(self._ss_face_labels, rows):
                         box = face.get("box")
                         if not (isinstance(box, (list, tuple)) and len(box) == 4):
                             continue
@@ -2754,7 +2920,7 @@ class PhotosEditor:
                             continue
                         self._ss_face_thumbs.append(thumb)
                         lbl.config(image=thumb, text="", width=0)
-                elif rec.get("faces"):
+                elif rows:
                     for lbl in self._ss_face_labels:
                         lbl.config(text="(n/a)")
             self.root.after(0, _apply)
