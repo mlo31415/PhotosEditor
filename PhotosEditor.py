@@ -116,11 +116,16 @@ VIEWER_FALLBACK_SIZES = ("xxlarge", "xlarge", "large", "medium", "small",
                          "2small", "thumb")
 STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 
-# TEMPORARY: nothing may change on Piwigo without being approved first.  While
-# this is True every operation that writes to the server stops to ask, with the
-# answer set to No, so the block holds unless it is deliberately overridden.
-# Set to False (or delete this and the _confirm_update_blocked calls) to lift it.
-UPDATES_BLOCKED = True
+# Uploading is off unless the params file says otherwise, so a fresh setup, a
+# lost params file or an unreadable one all leave Piwigo untouched.  Every
+# operation that writes to the server asks first while it is off; the choice to
+# turn it on is written back under this key.
+UPLOADS_ENABLED_KEY = "uploads_enabled"
+
+
+def _uploads_enabled() -> bool:
+    """Whether uploading to Piwigo is turned on in the params file."""
+    return bool(_store.load_op_params().get(UPLOADS_ENABLED_KEY, False))
 
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
@@ -3291,9 +3296,9 @@ class PhotosEditor:
         total = len(batch)
 
         verb = 'Moving' if op == 'move' else 'Copying'
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f"This would {op} {total} photo(s) between albums on Piwigo."):
-            self.set_status(f"{op.capitalize()} cancelled — updates to Piwigo are blocked.")
+            self.set_status(f"{op.capitalize()} cancelled — uploading is turned off.")
             return
 
         sop = self._begin_server_op(f"{verb} {total} photo(s)")
@@ -3607,9 +3612,9 @@ class PhotosEditor:
                 parent=self.root):
             return
 
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f'This would move the album "{short}" on Piwigo.'):
-            self.set_status("Album move cancelled — updates to Piwigo are blocked.")
+            self.set_status("Album move cancelled — uploading is turned off.")
             return
 
         dlg = tk.Toplevel(self.root)
@@ -3666,10 +3671,10 @@ class PhotosEditor:
         if not self._move_undo_stack:
             self.set_status("Nothing to undo.")
             return
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f"This would undo \"{self._move_undo_stack[-1]['description']}\" "
                 "by putting those photos back in their albums on Piwigo."):
-            self.set_status("Undo cancelled — updates to Piwigo are blocked.")
+            self.set_status("Undo cancelled — uploading is turned off.")
             return
         record = self._move_undo_stack.pop()
         items  = record['items']
@@ -3758,9 +3763,9 @@ class PhotosEditor:
                 parent=self.root):
             return
 
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f'This would take {n} photo(s) out of "{album_name}" on Piwigo.'):
-            self.set_status("Remove cancelled — updates to Piwigo are blocked.")
+            self.set_status("Remove cancelled — uploading is turned off.")
             return
 
         sop = self._begin_server_op(f"Removing {n} photo(s) from an album")
@@ -3836,9 +3841,9 @@ class PhotosEditor:
                 parent=self.root):
             return
 
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f'This would take "{name}" out of "{album_name}" on Piwigo.'):
-            self.set_status("Remove cancelled — updates to Piwigo are blocked.")
+            self.set_status("Remove cancelled — uploading is turned off.")
             return
 
         sop = self._begin_server_op(f'Removing "{name}" from an album')
@@ -4103,9 +4108,9 @@ class PhotosEditor:
         image_id = img_dict.get("id")
         fname    = img_dict.get("file") or img_dict.get("name") or f"{image_id}.jpg"
 
-        if not self._confirm_update_blocked(
+        if not self._confirm_upload_allowed(
                 f'This would upload "{fname}" and its details to Piwigo.'):
-            self.set_status("Upload cancelled — updates to Piwigo are blocked.")
+            self.set_status("Upload cancelled — uploading is turned off.")
             return
 
         # Uploading an untouched photo re-encodes it and rewrites its metadata for
@@ -4896,20 +4901,65 @@ class PhotosEditor:
         self._loaded_fields = self._editor_field_values()
         return True
 
-    def _confirm_update_blocked(self, what: str, parent=None) -> bool:
-        """Stop an operation that would change Piwigo while UPDATES_BLOCKED.
+    def _confirm_upload_allowed(self, what: str, parent=None) -> bool:
+        """Gate an operation that would change Piwigo.  True to let it through.
 
-        Returns True to let it through -- immediately when the block is off, and
-        otherwise only if the warning is answered Yes.  No is the default answer,
-        so Return or Escape leaves the server untouched.
+        Returns at once when uploading is turned on.  Otherwise it offers three
+        ways out: leave the server alone (also what Escape and the close box
+        do), let this one through without changing anything, or turn uploading
+        on for good, which is written to the params file.
         """
-        if not UPDATES_BLOCKED:
+        if _uploads_enabled():
             return True
-        return messagebox.askyesno(
-            "Updates Are Blocked",
-            f"Updates to Piwigo are currently blocked.\n\n{what}\n\n"
-            "Send this change to the server anyway?",
-            icon="warning", default=messagebox.NO, parent=parent or self.root)
+
+        allowed = {'value': False}
+        dlg = tk.Toplevel(parent or self.root)
+        dlg.title("Uploading Is Turned Off")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: dlg.destroy())     # = the first choice
+
+        body = ttk.Frame(dlg, padding=(18, 14, 18, 6))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Uploading to Piwigo is turned off.",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        ttk.Label(body, text=what, justify="left", wraplength=420,
+                  padding=(0, 8, 0, 0)).pack(anchor="w")
+
+        def choose(allow: bool, turn_on: bool = False):
+            if turn_on and not _store.set_op_param(UPLOADS_ENABLED_KEY, True):
+                messagebox.showwarning(
+                    "Uploading Is Turned Off",
+                    "Uploading could not be turned on: the settings file could "
+                    "not be written.\n\nThis upload will go ahead, but the "
+                    "setting has not been remembered.", parent=dlg)
+            allowed['value'] = allow
+            dlg.destroy()
+
+        btns = ttk.Frame(dlg, padding=(18, 4, 18, 6))
+        btns.pack(fill="x")
+        stay = ttk.Button(btns, text="Continue without uploading",
+                          command=lambda: choose(False))
+        stay.pack(side="left")
+        ttk.Button(btns, text="Allow this upload only",
+                   command=lambda: choose(True)).pack(side="left", padx=8)
+        ttk.Button(btns, text="Turn uploading on",
+                   command=lambda: choose(True, turn_on=True)).pack(side="left")
+        ttk.Label(dlg, padding=(18, 0, 18, 12), foreground="gray",
+                  font=("TkDefaultFont", 8),
+                  text="Turning it on is remembered in PhotosEditor Params.json "
+                       "and applies to every later upload.").pack(anchor="w")
+
+        dlg.bind("<Escape>", lambda e: choose(False))
+        stay.focus_set()
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{rx + (rw - dw) // 2}+{ry + (rh - dh) // 2}")
+        dlg.wait_window()
+        return allowed['value']
 
     def _editor_field_values(self) -> dict:
         """The custom fields as they stand, for comparing against what loaded."""
