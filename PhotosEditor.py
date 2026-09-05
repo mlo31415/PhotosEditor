@@ -1492,7 +1492,10 @@ class PhotosEditor:
         # right takes the width of the Revert Restoration column above it, so
         # the centre the buttons sit on is the sliders' centre, and stays so
         # however that button is sized.
-        action_bar = ttk.Frame(dlg, padding=(8, 4))
+        # In lower_frame rather than in dlg, so it follows the sliders directly
+        # instead of being pushed to the foot of the editor: the spare height in
+        # this pane then falls below the buttons instead of above them.
+        action_bar = ttk.Frame(lower_frame, padding=(8, 4))
         action_bar.pack(fill="x")
         buttons_area = ttk.Frame(action_bar)
         buttons_area.pack(side="left", fill="x", expand=True)
