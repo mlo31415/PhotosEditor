@@ -1487,18 +1487,31 @@ class PhotosEditor:
                    command=self._reset_restoration).pack()
 
         # ── Dialog action buttons (Upload / Close) ────────────────────────────
+        # Centred under the restoration sliders -- the Sharpen line is the
+        # bottom one -- rather than hugging the left edge.  The tail on the
+        # right takes the width of the Revert Restoration column above it, so
+        # the centre the buttons sit on is the sliders' centre, and stays so
+        # however that button is sized.
         action_bar = ttk.Frame(dlg, padding=(8, 4))
         action_bar.pack(fill="x")
+        buttons_area = ttk.Frame(action_bar)
+        buttons_area.pack(side="left", fill="x", expand=True)
+        tail = ttk.Frame(action_bar, width=0)
+        tail.pack(side="left", fill="y", padx=(8, 0))
+        btns_col.bind("<Configure>",
+                      lambda e, t=tail: t.configure(width=e.width))
+        centred = ttk.Frame(buttons_area)
+        centred.pack(anchor="center")
 
         self.upload_photo_btn = tk.Button(
-            action_bar, text="⬆ Upload to Piwigo",
+            centred, text="⬆ Upload to Piwigo",
             command=self._upload_current_photo,
             background="#add8e6",
             font=("TkDefaultFont", 10, "bold"),
             state="disabled")
         self.upload_photo_btn.pack(side="left", padx=(0, 8))
 
-        ttk.Button(action_bar, text="Close",
+        ttk.Button(centred, text="Close",
                    command=self._close_editor_dialog).pack(side="left")
 
         dlg.after(100, self._set_initial_sash_positions)
