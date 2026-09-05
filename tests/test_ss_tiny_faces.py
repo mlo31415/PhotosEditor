@@ -42,6 +42,10 @@ class TheCutoffIsTheSharedOne(unittest.TestCase):
         self.assertAlmostEqual(
             SmallFaceCutoff([[0, 0, 100, 0], [0, 0, 90, 0],
                              [0, 0, 80, 0], [0, 0, 10, 0]]), 80*SMALL_FACE_RATIO)
+        # with only two, the larger sets it
+        self.assertAlmostEqual(SmallFaceCutoff([[0, 0, 100, 0], [0, 0, 10, 0]]),
+                               100*SMALL_FACE_RATIO)
+        self.assertEqual(SmallFaceCutoff([[0, 0, 100, 0]]), 0.0)
 
     def test_dropping_and_measuring_agree(self):
         from FaceGeometry import DropTinyFaces, SmallFaceCutoff, FaceSize
@@ -88,11 +92,17 @@ class WhichRowsAreShown(unittest.TestCase):
         group = [record(11, "t1", faces=[face(n) for n in range(1, 7)])]
         self.assertEqual(numbers(group), [1, 2, 3, 4, 5, 6])
 
-    def test_fewer_than_three_faces_are_left_alone(self):
-        """No third largest to measure against, and dropping one of two would
-        be worse than keeping a small one."""
+    def test_two_faces_are_measured_against_the_larger(self):
         group = [record(11, "t1", faces=[face(1), face(2, size=5)])]
+        self.assertEqual(numbers(group), [1])
+
+    def test_a_named_stray_survives_in_a_two_face_photo_too(self):
+        group = [record(11, "t1", faces=[face(1), face(2, "Bob Tucker", size=5)])]
         self.assertEqual(numbers(group), [1, 2])
+
+    def test_a_lone_face_is_never_hidden(self):
+        group = [record(11, "t1", faces=[face(1, size=5)])]
+        self.assertEqual(numbers(group), [1])
 
     def test_one_big_face_does_not_carry_away_the_rest(self):
         """The measure is the third largest: bar is 80*0.2 = 16."""
@@ -132,7 +142,7 @@ class AgainstTheRealLog(unittest.TestCase):
                     self.assertIn(key, shown, "a named face was hidden")
 
     def test_no_photo_loses_every_face_it_had(self):
-        """The rule keeps the third largest, so something always survives."""
+        """Whichever face sets the bar clears it, so something always survives."""
         for group in pe._ss_group_by_photo(self.records):
             if pe._ss_face_rows(group):
                 with self.subTest(photo=group[0].get("photo id")):
