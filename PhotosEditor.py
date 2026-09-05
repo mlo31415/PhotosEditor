@@ -69,7 +69,8 @@ try:
     import TagHandler
     import DateUtils
     import PhotoRestoration
-    from FaceGeometry import FaceCircleOnDisplay, RoundFaceThumbnail
+    from FaceGeometry import (FaceCircleOnDisplay, RoundFaceThumbnail,
+                              FaceSize, SmallFaceCutoff)
     # Override the params-file path to the exe/script's own directory.
     AlbumHierarchy.PARAMS_FILE = _SCRIPT_DIR / "PhotosEditor Params.json"
 except ImportError as _e:
@@ -424,6 +425,50 @@ def _ss_face_rows(group: list) -> list:
                          "number": face.get("number", i + 1),
                          "box":    face.get("box")})
     return rows
+
+
+def _ss_named_face_keys(group: list) -> set:
+    """The faces somebody has actually put a name to, over every report on this
+    photo -- including reports with no column of their own, whether because
+    they are collapsed duplicates or say nothing else at all."""
+    named = set()
+    for rec in group:
+        for face in rec.get("faces") or []:
+            if (face.get("name") or "").strip():
+                named.add(_ss_face_key(face))
+    return named
+
+
+def _ss_hide_tiny_unnamed_rows(rows: list, group: list) -> list:
+    """Leave out the rows for faces too small to identify.
+
+    SlideShow now drops these before it ever writes a report, by the same rule
+    from the shared FaceGeometry, but logs written before that still carry
+    them: a photo of 296 can offer rows cut from a dozen stray pixels.
+
+    A small face somebody has named anyway is kept.  They looked at it and knew
+    who it was, so it is plainly not a stray, and hiding it would hide their
+    work with it.
+    """
+    boxes = [r["box"] for r in rows if _ss_usable_box(r.get("box"))]
+    cutoff = SmallFaceCutoff(boxes)
+    if not cutoff:
+        return rows
+    named = _ss_named_face_keys(group)
+    return [r for r in rows
+            if not _ss_usable_box(r.get("box"))
+            or FaceSize(r["box"]) >= cutoff
+            or r["key"] in named]
+
+
+def _ss_usable_box(box) -> bool:
+    """A box that can be measured; a report written without one is left alone."""
+    if not (isinstance(box, (list, tuple)) and len(box) == 4):
+        return False
+    try:
+        return all(float(v) == float(v) for v in box)
+    except (TypeError, ValueError):
+        return False
 
 
 def _ss_report_columns(group: list) -> list:
@@ -1074,6 +1119,7 @@ class PhotosEditor:
         self._ss_group_index:  int  = 0
         self._ss_rows:         list = []    # faces of the photo under review
         self._ss_columns:      list = []    # its reports, as shown
+        self._ss_hidden:       int  = 0     # its faces too small to be worth showing
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
@@ -2697,9 +2743,19 @@ class PhotosEditor:
                              row=row, column=c, sticky="w", padx=(10, 0))
 
         if not rows:
-            tk.Label(grid, text="(no faces were detected in this photo)",
+            tk.Label(grid, text="(no faces were detected in this photo)" if not self._ss_hidden
+                     else "(every face detected in this photo was too small to identify)",
                      bg=bg, fg="gray").grid(row=FIRST, column=0, columnspan=2,
                                             sticky="w", pady=4)
+        elif self._ss_hidden:
+            # The face numbers are SlideShow's, so hiding some leaves gaps in
+            # them.  Say why, rather than leaving it to be wondered about.
+            n = self._ss_hidden
+            tk.Label(grid, bg=bg, fg="gray", font=("TkDefaultFont", 8),
+                     text=f"({n} more face{'s' if n != 1 else ''} too small to "
+                          f"identify, not shown)").grid(
+                              row=FIRST+len(rows), column=0, columnspan=2,
+                              sticky="w", pady=(6, 2))
 
         grid.update_idletasks()
         canvas = self._ss_matrix_canvas
@@ -2711,6 +2767,14 @@ class PhotosEditor:
             self._ss_hscroll.grid()
         else:
             self._ss_hscroll.grid_remove()
+
+    def _ss_set_rows_and_columns(self, group: list):
+        """What the matrix is about to show, and how many faces it is leaving
+        out as too small to identify."""
+        rows             = _ss_face_rows(group)
+        self._ss_rows    = _ss_hide_tiny_unnamed_rows(rows, group)
+        self._ss_hidden  = len(rows) - len(self._ss_rows)
+        self._ss_columns = _ss_report_columns(group)
 
     @property
     def _ss_group(self) -> list:
@@ -2741,8 +2805,7 @@ class PhotosEditor:
             state="normal" if self._ss_group_index < len(self._ss_groups) - 1
             else "disabled")
 
-        self._ss_rows    = _ss_face_rows(group)
-        self._ss_columns = _ss_report_columns(group)
+        self._ss_set_rows_and_columns(group)
         self._ss_build_matrix(self._ss_rows, self._ss_columns)
 
         # Load the photo: the editor side by id, and the face thumbnails from it
@@ -2877,8 +2940,7 @@ class PhotosEditor:
         group = self._ss_group
         group[:] = [r for r in group if not r.get("done")]
         if group:                       # reports remain: redraw this photo
-            self._ss_rows    = _ss_face_rows(group)
-            self._ss_columns = _ss_report_columns(group)
+            self._ss_set_rows_and_columns(group)
             self._ss_build_matrix(self._ss_rows, self._ss_columns)
             n = len(group)
             self._ss_count_var.set(
