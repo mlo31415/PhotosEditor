@@ -2989,8 +2989,12 @@ class PhotosEditor:
                 # replaced it is still running and will clear it when it lands
                 if gen != self._ss_load_gen or self._ss_review_frame is None:
                     return
-                self._ss_set_busy(False)
-                self._on_thumb_click(info)      # load the editor side
+                # This fetched the photo's details and a copy to cut the face
+                # thumbnails from; the photo the editor shows is downloaded by
+                # _on_thumb_click, and that is the long part.  The wait cursor
+                # stays on until it lands -- unless there is nothing to fetch.
+                if not self._on_thumb_click(info):
+                    self._ss_set_busy(False)
                 if img is not None:
                     # The labels were built from these same rows, in this order
                     for lbl, face in zip(self._ss_face_labels, rows):
@@ -3931,7 +3935,10 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Thumbnail click → load photo in editor
     # -----------------------------------------------------------------------
-    def _on_thumb_click(self, img_dict: dict):
+    def _on_thumb_click(self, img_dict: dict) -> bool:
+        """Start loading a photo into the editor.  True if a fetch was started,
+        so that a caller showing a wait cursor knows whether to expect it to be
+        taken off again when the photo lands."""
         self._save_current_custom_fields()
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         # The original first: an edit is saved by sending this image back in
@@ -3942,7 +3949,7 @@ class PhotosEditor:
             url = _pick_derivative_url(img_dict, VIEWER_FALLBACK_SIZES)
         if not url:
             self.set_status("No URL available for this photo.")
-            return
+            return False
         # In SS review mode the name is held at "Loading…" (set by _show_ss_record)
         # until the image itself is on screen, so the editor side stays wholly blank
         if self._ss_review_frame is None:
@@ -3954,9 +3961,11 @@ class PhotosEditor:
             target=self._worker_fetch_full,
             args=(url, img_dict),
             daemon=True).start()
+        return True
 
     def _worker_fetch_full(self, url: str, img_dict: dict):
         if not PIL_AVAILABLE or not REQUESTS_AVAILABLE:
+            self.root.after(0, lambda: self._photo_load_finished(img_dict))
             return
         try:
             creds  = _store.load_credentials()
@@ -3992,13 +4001,30 @@ class PhotosEditor:
             logger.exception(f"Failed to load {url}")
             name = img_dict.get("name") or img_dict.get("file") or "unknown"
             def _failed(name=name, e=e):
-                # Never leave the name stuck at "Loading…" (SS review mode)
+                # Never leave the name stuck at "Loading…", nor the wait cursor
+                # spinning on, when the photo is not going to arrive
+                self._photo_load_finished(img_dict)
                 self.photo_label_var.set(name)
                 self.set_status(f"Error loading \"{name}\": {e}")
             self.root.after(0, _failed)
 
+    def _photo_load_finished(self, img_dict: dict):
+        """A photo has arrived, or failed to: take the wait cursor off.
+
+        Only for the photo the review is actually waiting for.  Stepping on
+        quickly leaves an earlier load still in flight, and when it lands late
+        it must not take the cursor off while the newer one is still fetching.
+        """
+        if self._ss_review_frame is None:
+            return                              # the cursor was never put on
+        group = self._ss_group
+        if group and img_dict.get("id") != group[0].get("photo id"):
+            return
+        self._ss_set_busy(False)
+
     def _on_photo_loaded(self, pil: "Image.Image", img_dict: dict):
         """Called on the main thread once the full image has been downloaded."""
+        self._photo_load_finished(img_dict)
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
         self._current_image_dict = img_dict
