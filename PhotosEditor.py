@@ -236,6 +236,24 @@ _SS_USER_TYPED_FIELDS = {"photo date"}      # "editor" heads the panel, "comment
                                             # and the face names have their own widgets
 _SS_USER_TEXT_FG = "#CC0000"                # emphasis colour for what the user typed
 
+# One green marks the hovered face, in both halves of the screen.  On the photo
+# it is a line over an arbitrary photograph, so it is used at full strength,
+# with a dark ring beneath so it shows against a light picture.  On the row it
+# is a background with red names on it, so the same green is lightened towards
+# white until they are readable -- the same hue either way, not two greens.
+_SS_FACE_RING     = "#00FF40"
+_SS_FACE_RING_DARK = "#000000"
+
+
+def _lighten(colour: str, toward_white: float) -> tuple:
+    """A hex colour mixed with white, as an (r, g, b) triple."""
+    r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    return tuple(round(v + (255 - v) * toward_white) for v in (r, g, b))
+
+
+_SS_ROW_HL_BG_RGB = _lighten(_SS_FACE_RING, 0.72)       # for cutting thumbnails
+_SS_ROW_HL_BG     = "#%02X%02X%02X" % _SS_ROW_HL_BG_RGB
+
 
 def _read_ss_records(path: Path) -> list[dict]:
     """Parse a SlideShow output log: concatenated pretty-printed JSON objects."""
@@ -1120,6 +1138,8 @@ class PhotosEditor:
         self._ss_rows:         list = []    # faces of the photo under review
         self._ss_columns:      list = []    # its reports, as shown
         self._ss_hidden:       int  = 0     # its faces too small to be worth showing
+        self._ss_row_cells:    list = []    # each row's widgets, for the hover tint
+        self._ss_hover              = None  # the face row under the pointer, if any
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
@@ -1343,6 +1363,11 @@ class PhotosEditor:
         self.canvas.bind("<B1-Motion>",        self._on_crop_drag)
         self.canvas.bind("<ButtonRelease-1>",  self._on_crop_release)
         self.canvas.bind("<Escape>",           self._on_canvas_escape)
+        # Reviewing: pointing at a face on the photo lights its row on the
+        # right, the mirror of pointing at the row to ring the face.  Plain
+        # Motion does not fire while a crop is being dragged, which uses B1.
+        self.canvas.bind("<Motion>", self._ss_on_canvas_motion, add="+")
+        self.canvas.bind("<Leave>",  lambda e: self._ss_set_hover(None), add="+")
 
         def _enforce_canvas_min_width(event):
             min_w = int(event.width * 0.60)
@@ -2692,6 +2717,8 @@ class PhotosEditor:
             w.destroy()
         self._ss_face_thumbs = []       # keeps PhotoImage references alive
         self._ss_face_labels = []       # one per face row, filled in by the worker
+        self._ss_row_cells   = []       # the widgets of each row, for the hover tint
+        self._ss_hover       = None     # the row rebuilt out from under any hover
 
         grid = self._ss_matrix_frame
         HEAD, COMMENT, FIRST = 0, 1, 2  # row numbers of the two header rows
@@ -2738,25 +2765,31 @@ class PhotosEditor:
 
         for r, face in enumerate(rows):
             row = FIRST + r
-            tk.Label(grid, text=f"#{face['number']}", bg=bg,
-                     font=("TkDefaultFont", 10)).grid(row=row, column=0,
-                                                      sticky="e", padx=(0, 6))
+            cells = []
+            number_lbl = tk.Label(grid, text=f"#{face['number']}", bg=bg,
+                                  font=("TkDefaultFont", 10))
+            number_lbl.grid(row=row, column=0, sticky="e", padx=(0, 6))
+            cells.append(number_lbl)
             thumb_lbl = tk.Label(grid, text="…", bg=bg, width=9, fg="gray")
             thumb_lbl.grid(row=row, column=0, sticky="w", padx=(26, 10), pady=3)
-            # Hovering a thumbnail rings that face on the photo
-            box = face.get("box")
-            thumb_lbl.bind("<Enter>", lambda e, b=box: self._ss_highlight_face(b))
-            thumb_lbl.bind("<Leave>", self._ss_clear_face_highlight)
+            cells.append(thumb_lbl)
+            # Hovering a thumbnail rings that face on the photo and lights up
+            # the row it came from -- and hovering the face on the photo does
+            # the same, through the same call
+            thumb_lbl.bind("<Enter>", lambda e, i=r: self._ss_set_hover(i))
+            thumb_lbl.bind("<Leave>", lambda e: self._ss_set_hover(None))
             self._ss_face_labels.append(thumb_lbl)
 
             for c, col in enumerate(columns, start=1):
                 name = col["names"].get(face["key"], "")
-                tk.Label(grid, text=name or "—", bg=bg,
-                         fg=_SS_USER_TEXT_FG if name else "#b0b0b0",
-                         font=("TkDefaultFont", 11, "bold") if name
-                         else ("TkDefaultFont", 11),
-                         anchor="w", width=self._SS_COL_WIDTH).grid(
-                             row=row, column=c, sticky="w", padx=(10, 0))
+                cell = tk.Label(grid, text=name or "—", bg=bg,
+                                fg=_SS_USER_TEXT_FG if name else "#b0b0b0",
+                                font=("TkDefaultFont", 11, "bold") if name
+                                else ("TkDefaultFont", 11),
+                                anchor="w", width=self._SS_COL_WIDTH)
+                cell.grid(row=row, column=c, sticky="w", padx=(10, 0))
+                cells.append(cell)
+            self._ss_row_cells.append(cells)
 
         if not rows:
             tk.Label(grid, text="(no faces were detected in this photo)" if not self._ss_hidden
@@ -2867,8 +2900,8 @@ class PhotosEditor:
             return
         # A dark ring under a bright one, so it shows against any photograph
         self._ss_face_hl_ids = [
-            self.canvas.create_oval(*circle, outline="#000000", width=5),
-            self.canvas.create_oval(*circle, outline="#00FF40", width=2)]
+            self.canvas.create_oval(*circle, outline=_SS_FACE_RING_DARK, width=5),
+            self.canvas.create_oval(*circle, outline=_SS_FACE_RING, width=2)]
 
     def _ss_clear_face_highlight(self, _event=None):
         for item in self._ss_face_hl_ids:
@@ -2877,6 +2910,93 @@ class PhotosEditor:
             except Exception:
                 pass                        # canvas already gone (mode exited)
         self._ss_face_hl_ids = []
+
+    # ── One hovered face, whichever half of the screen the pointer is in ─────
+    def _ss_set_hover(self, index: "int | None"):
+        """Make this row's face the hovered one: its row lights up and it is
+        ringed on the photo.  None means nothing is hovered.
+
+        Everything that hovers a face comes through here -- the thumbnails on
+        the right, and the photo itself on the left -- so the two directions
+        cannot drift apart, and only one face is ever lit.
+        """
+        if index == self._ss_hover:
+            return                          # already showing: do no work
+        if self._ss_hover is not None:
+            self._ss_tint_row(self._ss_hover, False)
+        self._ss_clear_face_highlight()
+        self._ss_hover = index
+        if index is None:
+            return
+        self._ss_tint_row(index, True)
+        if 0 <= index < len(self._ss_rows):
+            self._ss_highlight_face(self._ss_rows[index].get("box"))
+
+    def _ss_face_at(self, x: float, y: float) -> "int | None":
+        """Which face's circle the point (x, y) falls in on the photo canvas.
+
+        The smallest wins where circles overlap, so a face in front of a larger
+        one can still be picked out.  Nothing is found once the photo has been
+        edited: the logged boxes are in the original's coordinates, and a crop
+        or rotate makes them meaningless.
+        """
+        img = self._current_image_dict
+        if (img is None or self._photo_display_rect is None or self._edit_history
+                or not self._ss_rows):
+            return None
+        size = (img.get("width") or 0, img.get("height") or 0)
+        best, best_radius = None, None
+        for i, face in enumerate(self._ss_rows):
+            box = face.get("box")
+            if not (isinstance(box, (list, tuple)) and len(box) == 4):
+                continue
+            try:
+                circle = _ss_face_circle_on_canvas(box, size, self._photo_display_rect)
+            except (TypeError, ValueError):
+                circle = None
+            if circle is None:
+                continue
+            x0, y0, x1, y1 = circle
+            cx, cy, radius = (x0 + x1)/2, (y0 + y1)/2, (x1 - x0)/2
+            if radius <= 0:
+                continue
+            if ((x - cx)**2 + (y - cy)**2 <= radius*radius
+                    and (best_radius is None or radius < best_radius)):
+                best, best_radius = i, radius
+        return best
+
+    def _ss_on_canvas_motion(self, event):
+        """Moving over a face on the photo lights its row, the same way moving
+        over the row rings the face."""
+        if self._ss_review_frame is None:
+            return
+        self._ss_set_hover(self._ss_face_at(self.canvas.canvasx(event.x),
+                                            self.canvas.canvasy(event.y)))
+
+    def _ss_tint_row(self, index: int, on: bool):
+        """Light up one face row.
+
+        The round thumbnail cannot simply sit on a different colour: its
+        corners, outside the circle, have the panel's background baked into
+        them.  A second copy cut against the highlight colour is made when the
+        thumbnails are, and swapped in here.
+        """
+        if not (0 <= index < len(self._ss_row_cells)):
+            return
+        bg = _SS_ROW_HL_BG if on else self._ss_faces_bg
+        for widget in self._ss_row_cells[index]:
+            try:
+                widget.config(bg=bg)
+            except tk.TclError:
+                pass                        # the matrix was rebuilt under us
+        if index < len(self._ss_face_labels):
+            label = self._ss_face_labels[index]
+            thumb = getattr(label, "_hl_thumb" if on else "_plain_thumb", None)
+            if thumb is not None:
+                try:
+                    label.config(image=thumb)
+                except tk.TclError:
+                    pass
 
     def _ss_step(self, delta: int):
         """Prev and Next move a whole photo at a time, reports and all.
@@ -3080,13 +3200,19 @@ class PhotosEditor:
                         if not (isinstance(box, (list, tuple)) and len(box) == 4):
                             continue
                         try:
-                            thumb = _round_face_thumb(
-                                img, [v * scale for v in box], self._ss_faces_bg_rgb)
+                            scaled = [v * scale for v in box]
+                            # Two copies: the circle's corners carry whatever
+                            # colour it was cut against, so the hover tint needs
+                            # its own or the row shows a square of the old one
+                            thumb = _round_face_thumb(img, scaled,
+                                                      self._ss_faces_bg_rgb)
+                            hl = _round_face_thumb(img, scaled, _SS_ROW_HL_BG_RGB)
                         except Exception:
                             logger.warning(f"Face thumbnail failed for box {box}",
                                            exc_info=True)
                             continue
-                        self._ss_face_thumbs.append(thumb)
+                        self._ss_face_thumbs += [thumb, hl]
+                        lbl._plain_thumb, lbl._hl_thumb = thumb, hl
                         lbl.config(image=thumb, text="", width=0)
                 elif rows:
                     for lbl in self._ss_face_labels:
