@@ -146,6 +146,10 @@ class _Setting(NamedTuple):
     kind:           str      # "bool", "int" or "float"
     description:    str
     restart_needed: bool = False
+    # A setting whose stored number is awkward to read can be shown in units of
+    # `scale`, named by `unit`.  The file always keeps the plain number.
+    scale:          float = 1
+    unit:           str = ""
 
 
 # Every setting PhotosEditor reads out of the params file.  The Settings window
@@ -157,9 +161,10 @@ _OP_PARAMS = [
              "file says otherwise, so a lost or unreadable file leaves the "
              "server alone."),
     _Setting("max_upload_pixels", "Maximum upload size", None, "int",
-             "Photos larger than this many pixels (width × height) are asked "
+             "Photos with more pixels than this (width × height) are asked "
              "about before uploading, rather than being sent or shrunk "
-             "silently.  Blank means no limit."),
+             "silently.  Blank means no limit.  4000 is four megapixels.",
+             scale=1000, unit="thousand pixels"),
     _Setting("sync_metadata", "Sync metadata after upload", True, "bool",
              "Ask Piwigo to re-read the uploaded file's own metadata."),
     _Setting("refresh_representative", "Refresh album thumbnail", True, "bool",
@@ -195,8 +200,22 @@ def _relaunch_command() -> list:
     return [sys.executable, str(Path(__file__).resolve())]
 
 
+def _setting_display(setting: "_Setting", value) -> str:
+    """A setting's value as the window shows it -- in the setting's own units,
+    which are not always the file's."""
+    if value is None or value == "":
+        return "" if setting.kind != "bool" else "No"
+    if setting.kind == "bool":
+        return "Yes" if value else "No"
+    shown = value / setting.scale
+    if setting.kind == "int" and float(shown).is_integer():
+        return _format_setting(int(shown))
+    return _format_setting(round(shown, 6))
+
+
 def _parse_setting(setting: "_Setting", text: str):
-    """A typed value from what was typed, or ValueError with a readable reason.
+    """What was typed, turned back into the number the file keeps, or a
+    ValueError saying what is wrong with it.
 
     Returns None for an empty box, meaning "not set" -- which is only allowed
     where the setting has no default of its own to fall back to.
@@ -207,13 +226,26 @@ def _parse_setting(setting: "_Setting", text: str):
             return None
         raise ValueError(f"{setting.label} cannot be blank")
     try:
-        value = int(text.replace(",", "")) if setting.kind == "int" else float(text)
+        typed = float(text.replace(",", ""))
     except ValueError:
         want = "a whole number" if setting.kind == "int" else "a number"
-        raise ValueError(f"{setting.label} must be {want}")
-    if value <= 0:
+        raise ValueError(f"{setting.label} must be {want}{_in_units(setting)}")
+    if typed <= 0:
         raise ValueError(f"{setting.label} must be greater than zero")
-    return value
+    value = typed * setting.scale
+    if setting.kind != "int":
+        return value
+    # In its own units a scaled setting may sensibly be typed with a fraction
+    # -- 4000.5 thousand pixels is a whole number of pixels -- so what has to
+    # come out whole is the number the file keeps, not the one typed.
+    if not float(value).is_integer():
+        raise ValueError(f"{setting.label} must be a whole number"
+                         f"{_in_units(setting)}")
+    return int(value)
+
+
+def _in_units(setting: "_Setting") -> str:
+    return f" of {setting.unit}" if setting.unit else ""
 
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
@@ -5304,8 +5336,10 @@ class PhotosEditor:
         for setting in _OP_PARAMS:
             in_file = setting.key in params
             value = params[setting.key] if in_file else setting.default
-            known.append((setting.label, _format_setting(value), in_file,
-                          setting.description))
+            shown = _setting_display(setting, value) or "(not set)"
+            if setting.unit and value is not None:
+                shown += f" {setting.unit}"
+            known.append((setting.label, shown, in_file, setting.description))
         return known, PhotosEditor._unused_settings(params)
 
     @staticmethod
@@ -5416,9 +5450,12 @@ class PhotosEditor:
                 ttk.Checkbutton(rows, variable=var).grid(
                     row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
             else:
-                var = tk.StringVar(value="" if value is None else str(value))
-                ttk.Entry(rows, textvariable=var, width=14).grid(
-                    row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
+                var = tk.StringVar(value=_setting_display(setting, value))
+                box = ttk.Frame(rows)
+                box.grid(row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
+                ttk.Entry(box, textvariable=var, width=10).pack(side="left")
+                if setting.unit:
+                    ttk.Label(box, text=setting.unit).pack(side="left", padx=(4, 0))
             widgets[setting.key] = var
             ttk.Label(rows, text="" if in_file else "(default — not in the file)",
                       foreground="gray", font=("TkDefaultFont", 8)).grid(

@@ -74,7 +74,8 @@ class EverySettingAppears(Rows):
                     "refresh_representative": True,
                     "max_upload_pixels": 4000000})
         known, others = self.rows()
-        self.assertEqual(known["Maximum upload size"], ("4,000,000", True))
+        self.assertEqual(known["Maximum upload size"],
+                         ("4000 thousand pixels", True))
         self.assertEqual(known["Refresh album thumbnail"], ("Yes", True))
         self.assertEqual(others, [("path", ".")])
 
@@ -90,6 +91,44 @@ class KeysTheProgramDoesNotRead(Rows):
     def test_nothing_extra_means_nothing_shown(self):
         _, others = self.rows({"uploads_enabled": True})
         self.assertEqual(others, [])
+
+
+class ShownInItsOwnUnits(unittest.TestCase):
+    """The file keeps a pixel count -- width × height, as w*h > max_pixels
+    compares it -- which is an awkward number to read.  The window shows it in
+    thousands, so four megapixels reads as 4000."""
+
+    def setting(self, key):
+        return next(s for s in pe._OP_PARAMS if s.key == key)
+
+    def test_four_million_pixels_shows_as_4000(self):
+        self.assertEqual(
+            pe._setting_display(self.setting("max_upload_pixels"), 4000000), "4000")
+
+    def test_and_survives_the_round_trip(self):
+        setting = self.setting("max_upload_pixels")
+        for pixels in (4000000, 2500000, 500000, 1000):
+            with self.subTest(pixels=pixels):
+                shown = pe._setting_display(setting, pixels)
+                self.assertEqual(pe._parse_setting(setting, shown), pixels)
+
+    def test_an_odd_number_keeps_its_fraction_rather_than_lying(self):
+        self.assertEqual(
+            pe._setting_display(self.setting("max_upload_pixels"), 4000500), "4000.5")
+
+    def test_not_set_shows_as_an_empty_box(self):
+        self.assertEqual(
+            pe._setting_display(self.setting("max_upload_pixels"), None), "")
+
+    def test_an_unscaled_setting_shows_its_own_number(self):
+        self.assertEqual(
+            pe._setting_display(self.setting("rate_limit_calls_per_second"), 2.0),
+            "2.0")
+
+    def test_a_checkbox_setting_reads_yes_or_no(self):
+        uploads = self.setting("uploads_enabled")
+        self.assertEqual(pe._setting_display(uploads, True), "Yes")
+        self.assertEqual(pe._setting_display(uploads, False), "No")
 
 
 class HowValuesAreWritten(unittest.TestCase):
@@ -143,12 +182,12 @@ class WhatGetsWritten(Rows):
         self.assertNotIn("max_upload_pixels", on_disk)
 
     def test_what_is_written_reads_back_the_same(self):
-        self.written({"uploads_enabled": True, "max_upload_pixels": 500,
+        self.written({"uploads_enabled": True, "max_upload_pixels": 500000,
                       "sync_metadata": False, "refresh_representative": False,
                       "rate_limit_calls_per_second": 3.0})
         known, others = self.rows()
         self.assertEqual(known["Uploading enabled"], ("Yes", True))
-        self.assertEqual(known["Maximum upload size"], ("500", True))
+        self.assertEqual(known["Maximum upload size"], ("500 thousand pixels", True))
         self.assertEqual(known["Refresh album thumbnail"], ("No", True))
         self.assertEqual(others, [])
 
@@ -158,14 +197,22 @@ class ReadingWhatWasTyped(unittest.TestCase):
     def setting(self, key):
         return next(s for s in pe._OP_PARAMS if s.key == key)
 
-    def test_a_number_is_taken(self):
+    def test_typed_units_become_the_number_the_file_keeps(self):
+        """The box is in thousands of pixels; the file stays in pixels."""
         self.assertEqual(pe._parse_setting(self.setting("max_upload_pixels"),
-                                           "4000000"), 4000000)
+                                           "4000"), 4000000)
 
     def test_separators_are_forgiven(self):
-        """The window shows 4,000,000, so it has to accept it back."""
         self.assertEqual(pe._parse_setting(self.setting("max_upload_pixels"),
-                                           "4,000,000"), 4000000)
+                                           "2,500"), 2500000)
+
+    def test_a_fraction_of_a_unit_is_fine_when_the_pixels_come_out_whole(self):
+        self.assertEqual(pe._parse_setting(self.setting("max_upload_pixels"),
+                                           "4000.5"), 4000500)
+
+    def test_an_unscaled_setting_is_unaffected(self):
+        self.assertEqual(pe._parse_setting(
+            self.setting("rate_limit_calls_per_second"), "1.5"), 1.5)
 
     def test_a_blank_means_not_set_where_that_is_allowed(self):
         self.assertIsNone(pe._parse_setting(self.setting("max_upload_pixels"), "  "))
@@ -179,9 +226,15 @@ class ReadingWhatWasTyped(unittest.TestCase):
             pe._parse_setting(self.setting("max_upload_pixels"), "lots")
         self.assertIn("whole number", str(caught.exception))
 
-    def test_a_fraction_is_refused_where_a_whole_number_is_wanted(self):
-        with self.assertRaises(ValueError):
-            pe._parse_setting(self.setting("max_upload_pixels"), "3.5")
+    def test_a_fraction_is_refused_when_the_pixels_would_not_come_out_whole(self):
+        with self.assertRaises(ValueError) as caught:
+            pe._parse_setting(self.setting("max_upload_pixels"), "3.0005")
+        self.assertIn("whole number", str(caught.exception))
+
+    def test_the_message_says_which_units(self):
+        with self.assertRaises(ValueError) as caught:
+            pe._parse_setting(self.setting("max_upload_pixels"), "lots")
+        self.assertIn("thousand pixels", str(caught.exception))
 
     def test_zero_and_below_are_refused(self):
         for text in ("0", "-1"):
