@@ -128,6 +128,27 @@ def _uploads_enabled() -> bool:
     """Whether uploading to Piwigo is turned on in the params file."""
     return bool(_store.load_op_params().get(UPLOADS_ENABLED_KEY, False))
 
+
+# Every setting PhotosEditor reads out of the params file: the key, what to
+# call it, what it does, and what it falls back to when the file does not say.
+# The Settings window is built from this, so a setting added to the program and
+# not to this list is one the user cannot see.
+_OP_PARAMS = [
+    (UPLOADS_ENABLED_KEY, "Uploading enabled", False,
+     "Whether anything may be written to Piwigo at all.  Off unless the file "
+     "says otherwise, so a lost or unreadable file leaves the server alone."),
+    ("max_upload_pixels", "Maximum upload size", None,
+     "Photos larger than this many pixels (width × height) are asked about "
+     "before uploading, rather than being sent or shrunk silently.  Blank "
+     "means no limit."),
+    ("sync_metadata", "Sync metadata after upload", True,
+     "Ask Piwigo to re-read the uploaded file's own metadata."),
+    ("refresh_representative", "Refresh album thumbnail", True,
+     "Ask Piwigo to re-pick the album's cover photo after an upload."),
+    ("rate_limit_calls_per_second", "Server calls per second", 2.0,
+     "How fast to talk to Piwigo.  Lower is gentler on the server."),
+]
+
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
 
@@ -734,6 +755,17 @@ def _real_photo_filename(img_dict: dict, image_id) -> str:
     return os.path.splitext(title)[0]+os.path.splitext(stored)[1]
 
 
+def _format_setting(value) -> str:
+    """A setting as a person would read it rather than as JSON spells it."""
+    if value is None or value == "":
+        return "(not set)"
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, int) and value >= 10000:
+        return f"{value:,}"
+    return str(value)
+
+
 def _changed_field_labels(loaded: dict, now: dict, labels: dict) -> list:
     """Human labels of the custom fields that differ from how they loaded.
 
@@ -1177,6 +1209,9 @@ class PhotosEditor:
         self._ss_review_btn = ttk.Button(toolbar, text="Review SS Comments",
                                          command=self._toggle_ss_review)
         self._ss_review_btn.pack(side="left", padx=2)
+
+        ttk.Button(toolbar, text="Settings…",
+                   command=self._show_settings).pack(side="left", padx=2)
 
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
@@ -5183,6 +5218,111 @@ class PhotosEditor:
         deciding against it.  Nothing further should ask about them."""
         self._photo_edited  = False
         self._loaded_fields = self._editor_field_values()
+
+    # -----------------------------------------------------------------------
+    # Settings
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _settings_rows() -> "tuple[list, list]":
+        """What the Settings window shows: the settings PhotosEditor reads, and
+        anything else the file happens to hold.
+
+        Each known row is (label, shown value, from_file, description).  A
+        setting the file does not mention shows the value the program will
+        actually use, marked as a default, so what is missing is as plain as
+        what is there.
+        """
+        params = _store.load_op_params()
+        known = []
+        for key, label, default, description in _OP_PARAMS:
+            in_file = key in params
+            value = params[key] if in_file else default
+            known.append((label, _format_setting(value), in_file, description))
+        # Keys the file carries that this program never looks at -- leftovers
+        # from an older version, or another program's.  Better shown than not.
+        others = sorted((k, _format_setting(v)) for k, v in params.items()
+                        if k not in {p[0] for p in _OP_PARAMS})
+        return known, others
+
+    def _show_settings(self):
+        """Show the parameters file as it currently stands.  Read-only: the
+        file is edited in a text editor, or by the choices that write to it."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("PhotosEditor Settings")
+        dlg.transient(self.root)
+
+        body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Settings, as the parameters file has them",
+                  font=("TkDefaultFont", 10, "bold")).grid(
+                      row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(body, text=str(_store.params_file), foreground="gray",
+                  font=("TkDefaultFont", 8)).grid(
+                      row=1, column=0, columnspan=3, sticky="w", pady=(2, 10))
+
+        rows = ttk.Frame(body)
+        rows.grid(row=2, column=0, columnspan=3, sticky="nsew")
+        rows.columnconfigure(1, weight=1)
+
+        def fill():
+            for w in rows.winfo_children():
+                w.destroy()
+            known, others = self._settings_rows()
+            r = 0
+            for label, value, in_file, description in known:
+                ttk.Label(rows, text=f"{label}:", anchor="e", width=26).grid(
+                    row=r, column=0, sticky="e", pady=(4, 0))
+                ttk.Label(rows, text=value, font=("TkDefaultFont", 10, "bold"),
+                          foreground="black" if in_file else "gray").grid(
+                              row=r, column=1, sticky="w", padx=(8, 6), pady=(4, 0))
+                ttk.Label(rows, text="" if in_file else "(default — not in the file)",
+                          foreground="gray", font=("TkDefaultFont", 8)).grid(
+                              row=r, column=2, sticky="w", pady=(4, 0))
+                ttk.Label(rows, text=description, foreground="#555555",
+                          font=("TkDefaultFont", 8), wraplength=430,
+                          justify="left").grid(row=r + 1, column=1, columnspan=2,
+                                               sticky="w", padx=(8, 0))
+                r += 2
+            if others:
+                ttk.Separator(rows, orient="horizontal").grid(
+                    row=r, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+                ttk.Label(rows, text="Also in the file, but not used by "
+                                     "PhotosEditor:", foreground="gray",
+                          font=("TkDefaultFont", 8)).grid(
+                              row=r + 1, column=0, columnspan=3, sticky="w")
+                r += 2
+                for key, value in others:
+                    ttk.Label(rows, text=f"{key}:", anchor="e", width=26,
+                              foreground="gray").grid(row=r, column=0, sticky="e")
+                    ttk.Label(rows, text=value, foreground="gray").grid(
+                        row=r, column=1, sticky="w", padx=(8, 0))
+                    r += 1
+
+        fill()
+
+        ttk.Separator(body, orient="horizontal").grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        ttk.Label(body, text="The Piwigo url, username and password are not "
+                             "settings and are not shown here; they are kept "
+                             f"in {_store.credentials_file.name}.",
+                  foreground="gray", font=("TkDefaultFont", 8),
+                  wraplength=520, justify="left").grid(
+                      row=4, column=0, columnspan=3, sticky="w")
+
+        buttons = ttk.Frame(dlg, padding=(16, 4, 16, 14))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Re-read the file", command=fill).pack(side="left")
+        close = ttk.Button(buttons, text="Close", command=dlg.destroy)
+        close.pack(side="right")
+        dlg.bind("<Escape>", lambda e: dlg.destroy())
+        close.focus_set()
+
+        self.root.update_idletasks()
+        dlg.update_idletasks()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+        dlg.geometry(f"+{rx + (rw - dw)//2}+{max(ry + (rh - dh)//2, 0)}")
 
     def _confirm_upload_allowed(self, what: str, parent=None) -> bool:
         """Gate an operation that would change Piwigo.  True to let it through.
