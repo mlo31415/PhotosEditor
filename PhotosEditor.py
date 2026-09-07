@@ -124,6 +124,12 @@ STATE_FILE         = _SCRIPT_DIR / "PhotosEditor State.json"
 # turn it on is written back under this key.
 UPLOADS_ENABLED_KEY = "uploads_enabled"
 
+# Where Review SS Comments looks for SlideShow's output logs.  Up here with the
+# other settings rather than beside the rest of the SlideShow support, because
+# _OP_PARAMS below needs both of these.
+SS_REVIEW_DIR_KEY = "ss_review_dir"
+SS_LOG_GLOB       = "SlideShow Output *.json"
+
 
 def _uploads_enabled() -> bool:
     """Whether uploading to Piwigo is turned on in the params file."""
@@ -143,7 +149,7 @@ class _Setting(NamedTuple):
     key:            str
     label:          str
     default:        object
-    kind:           str      # "bool", "int" or "float"
+    kind:           str      # "bool", "int", "float" or "folder"
     description:    str
     restart_needed: bool = False
     # A setting whose stored number is awkward to read can be shown in units of
@@ -172,7 +178,44 @@ _OP_PARAMS = [
     _Setting("rate_limit_calls_per_second", "Server calls per second", 2.0,
              "float",
              "How fast to talk to Piwigo.  Lower is gentler on the server."),
+    _Setting(SS_REVIEW_DIR_KEY, "SlideShow output folder", None, "folder",
+             "Where Review SS Comments looks for the "
+             f'"{SS_LOG_GLOB}" files.  That one folder only -- it does not '
+             "look inside folders within it."),
 ]
+
+
+def _ss_review_dir() -> str:
+    """The folder Review SS Comments reads, from the params file.
+
+    A relative one is resolved against the program's own directory rather than
+    whatever directory it was started from -- which is where the value written
+    before this became a setting came from, and what made it depend on how the
+    program was launched.
+    """
+    folder = str(_store.load_op_params().get(SS_REVIEW_DIR_KEY, "") or "")
+    if folder and not Path(folder).is_absolute():
+        return str((_SCRIPT_DIR / folder).resolve())
+    return folder
+
+
+def _migrate_ss_review_dir(state: dict) -> None:
+    """Move the SlideShow folder out of the state file, where it used to be
+    remembered, and into the params file, where it is now a setting.
+
+    Done once and quietly: the folder is the same folder, and the user picked
+    it long ago.  It is made absolute on the way.
+    """
+    old = str(state.pop(SS_REVIEW_DIR_KEY, "") or "")
+    if not old or _store.load_op_params().get(SS_REVIEW_DIR_KEY):
+        return
+    folder = Path(old)
+    if not folder.is_absolute():
+        folder = _SCRIPT_DIR / folder
+    if folder.is_dir():
+        _store.set_op_param(SS_REVIEW_DIR_KEY, str(folder.resolve()))
+        logger.info(f"Moved the SlideShow folder setting into "
+                    f"{_store.params_file.name}: {folder}")
 
 
 def _save_op_params(params: dict) -> bool:
@@ -207,6 +250,8 @@ def _setting_display(setting: "_Setting", value) -> str:
         return "" if setting.kind != "bool" else "No"
     if setting.kind == "bool":
         return "Yes" if value else "No"
+    if setting.kind == "folder":
+        return str(value)
     shown = value / setting.scale
     if setting.kind == "int" and float(shown).is_integer():
         return _format_setting(int(shown))
@@ -225,6 +270,13 @@ def _parse_setting(setting: "_Setting", text: str):
         if setting.default is None:
             return None
         raise ValueError(f"{setting.label} cannot be blank")
+    if setting.kind == "folder":
+        # Stored as an absolute path: a relative one would be read against
+        # whatever directory the program happened to be started from.
+        folder = Path(text).expanduser()
+        if not folder.is_dir():
+            raise ValueError(f"{setting.label}: there is no folder at {text}")
+        return str(folder.resolve())
     try:
         typed = float(text.replace(",", ""))
     except ValueError:
@@ -346,7 +398,6 @@ def _format_duration(secs: float) -> str:
 # ---------------------------------------------------------------------------
 # SlideShow output-log support (Review SS Comments mode)
 # ---------------------------------------------------------------------------
-SS_LOG_GLOB  = "SlideShow Output *.json"
 # A log whose every record is done is renamed with this prefix, which also
 # takes it out of SS_LOG_GLOB and so out of the review scan
 SS_COMPLETED_PREFIX = "Completed - "
@@ -1176,6 +1227,7 @@ class PhotosEditor:
 
         # ── persistent state ────────────────────────────────────────────────
         self._state = _load_state()
+        _migrate_ss_review_dir(self._state)     # it is a setting now, not state
 
         # 1.5-inch thumbnails sized to the actual display DPI
         _sz = max(100, int(root.winfo_fpixels('1.5i')))
@@ -2677,9 +2729,11 @@ class PhotosEditor:
             self._enter_ss_review()
 
     def _enter_ss_review(self):
-        # The SS output directory is configured once and remembered in State.json --
-        # but only once it has actually yielded records, so a wrong pick can be redone
-        d = self._state.get("ss_review_dir", "")
+        # The SS output folder is a setting, changeable in the Settings window.
+        # It is also asked for here when it is unset or no longer any good --
+        # but only written once it has actually yielded records, so a wrong pick
+        # never becomes the remembered one.
+        d = _ss_review_dir()
         while True:
             if not d or not Path(d).is_dir():
                 d = filedialog.askdirectory(
@@ -2687,6 +2741,7 @@ class PhotosEditor:
                     title="Select the directory containing the SlideShow output files")
                 if not d:
                     return
+                d = str(Path(d).resolve())
             # Every log in the folder, photos with several records first
             records = _collect_ss_records(Path(d))
             if records:
@@ -2698,7 +2753,8 @@ class PhotosEditor:
                     parent=self.root):
                 return
             d = ""      # forces the folder dialog on the next pass
-        self._state["ss_review_dir"] = d
+        if d != _ss_review_dir():
+            _store.set_op_param(SS_REVIEW_DIR_KEY, d)
 
         # The editor's widgets are about to be rebuilt inside the review panel,
         # so an open editor dialog must be closed (and its edits dealt with) first.
@@ -3177,7 +3233,7 @@ class PhotosEditor:
         Returns (all_marked, completed_log).  A record that cannot be found is
         reported and left alone rather than being dropped silently.
         """
-        review_dir = self._state.get("ss_review_dir", "")
+        review_dir = _ss_review_dir()
         # An unset folder would make this Path(""), the working directory, where
         # the record certainly is not -- say so rather than searching the wrong place
         if not review_dir or not Path(review_dir).is_dir():
@@ -5377,6 +5433,17 @@ class PhotosEditor:
             blockers.append("changes to " + ", ".join(fields) + " have not been uploaded")
         return blockers
 
+    def _browse_for_folder(self, parent, var: tk.StringVar, setting: "_Setting"):
+        """The Browse button beside a folder setting.  Opens where the setting
+        already points, so choosing a neighbour of it is a short trip."""
+        current = (var.get() or "").strip()
+        chosen = filedialog.askdirectory(
+            parent=parent, mustexist=True,
+            title=f"Select the {setting.label.lower()}",
+            initialdir=current if current and Path(current).is_dir() else None)
+        if chosen:
+            var.set(str(Path(chosen).resolve()))
+
     def _offer_restart(self, settings: list):
         """A saved setting cannot take effect until the program restarts.
 
@@ -5449,6 +5516,17 @@ class PhotosEditor:
                 var = tk.BooleanVar(value=bool(value))
                 ttk.Checkbutton(rows, variable=var).grid(
                     row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
+            elif setting.kind == "folder":
+                var = tk.StringVar(value=_setting_display(setting, value))
+                box = ttk.Frame(rows)
+                box.grid(row=r, column=1, columnspan=2, sticky="ew",
+                         padx=(8, 6), pady=(6, 0))
+                ttk.Entry(box, textvariable=var, width=52).pack(
+                    side="left", fill="x", expand=True)
+                ttk.Button(box, text="Browse…", width=9,
+                           command=lambda v=var, s=setting:
+                               self._browse_for_folder(dlg, v, s)).pack(
+                                   side="left", padx=(4, 0))
             else:
                 var = tk.StringVar(value=_setting_display(setting, value))
                 box = ttk.Frame(rows)
@@ -5457,9 +5535,10 @@ class PhotosEditor:
                 if setting.unit:
                     ttk.Label(box, text=setting.unit).pack(side="left", padx=(4, 0))
             widgets[setting.key] = var
-            ttk.Label(rows, text="" if in_file else "(default — not in the file)",
-                      foreground="gray", font=("TkDefaultFont", 8)).grid(
-                          row=r, column=2, sticky="w", pady=(6, 0))
+            if setting.kind != "folder":        # its box already spans that column
+                ttk.Label(rows, text="" if in_file else "(default — not in the file)",
+                          foreground="gray", font=("TkDefaultFont", 8)).grid(
+                              row=r, column=2, sticky="w", pady=(6, 0))
             ttk.Label(rows, text=setting.description, foreground="#555555",
                       font=("TkDefaultFont", 8), wraplength=430,
                       justify="left").grid(row=r + 1, column=1, columnspan=2,

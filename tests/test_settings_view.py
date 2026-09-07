@@ -281,6 +281,78 @@ class WhenARestartIsNeeded(unittest.TestCase):
                          "matching _OP_PARAMS entry needs restart_needed=True")
 
 
+class TheSlideShowFolder(Rows):
+    """It used to be remembered in the state file, as a relative path resolved
+    against wherever the program was started from.  It is a setting now."""
+
+    def setting(self):
+        return next(s for s in pe._OP_PARAMS if s.key == pe.SS_REVIEW_DIR_KEY)
+
+    def test_it_is_a_setting_the_window_shows(self):
+        known, _ = self.rows({})
+        self.assertIn("SlideShow output folder", known)
+
+    def test_an_absolute_folder_is_taken_as_it_is(self):
+        self.assertEqual(pe._parse_setting(self.setting(), str(self.tmp)),
+                         str(self.tmp.resolve()))
+
+    def test_a_relative_one_is_made_absolute(self):
+        """So it no longer depends on the directory the program started in."""
+        got = pe._parse_setting(self.setting(), ".")
+        self.assertTrue(Path(got).is_absolute(), got)
+
+    def test_a_folder_that_is_not_there_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            pe._parse_setting(self.setting(), str(self.tmp / "no such folder"))
+        self.assertIn("no folder at", str(caught.exception))
+
+    def test_blank_means_not_set_rather_than_an_error(self):
+        self.assertIsNone(pe._parse_setting(self.setting(), "  "))
+
+    def test_it_is_written_to_the_params_file(self):
+        out = pe.PhotosEditor._settings_to_write(
+            {pe.SS_REVIEW_DIR_KEY: str(self.tmp)})
+        self.assertEqual(out[pe.SS_REVIEW_DIR_KEY], str(self.tmp))
+
+    def test_reading_it_back_resolves_a_relative_one(self):
+        self.write({pe.SS_REVIEW_DIR_KEY: "XX Photos"})
+        got = pe._ss_review_dir()
+        self.assertTrue(Path(got).is_absolute(), got)
+        self.assertTrue(got.endswith("XX Photos"), got)
+
+    def test_nothing_set_reads_as_empty(self):
+        self.write({})
+        self.assertEqual(pe._ss_review_dir(), "")
+
+
+class MovingItOutOfTheStateFile(Rows):
+
+    def test_an_old_state_file_hands_it_over(self):
+        state = {"ss_review_dir": str(self.tmp), "zoomed": True}
+        pe._migrate_ss_review_dir(state)
+        self.assertNotIn("ss_review_dir", state, "left behind in the state")
+        self.assertEqual(pe._store.load_op_params()[pe.SS_REVIEW_DIR_KEY],
+                         str(self.tmp.resolve()))
+        self.assertEqual(state["zoomed"], True, "the rest of the state survived")
+
+    def test_a_setting_already_there_is_not_overwritten(self):
+        self.write({pe.SS_REVIEW_DIR_KEY: str(self.tmp)})
+        state = {"ss_review_dir": str(self.tmp / "somewhere else")}
+        pe._migrate_ss_review_dir(state)
+        self.assertEqual(pe._store.load_op_params()[pe.SS_REVIEW_DIR_KEY],
+                         str(self.tmp))
+
+    def test_a_folder_that_has_gone_is_not_carried_over(self):
+        state = {"ss_review_dir": str(self.tmp / "gone")}
+        pe._migrate_ss_review_dir(state)
+        self.assertNotIn(pe.SS_REVIEW_DIR_KEY, pe._store.load_op_params())
+
+    def test_nothing_to_move_is_not_an_error(self):
+        state = {"zoomed": False}
+        pe._migrate_ss_review_dir(state)
+        self.assertNotIn(pe.SS_REVIEW_DIR_KEY, pe._store.load_op_params())
+
+
 class TheListItself(unittest.TestCase):
 
     def test_it_covers_every_key_the_program_reads(self):
