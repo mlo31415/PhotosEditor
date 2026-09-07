@@ -29,6 +29,7 @@ from tkinter import ttk, messagebox, filedialog, font as tkfont
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
+from typing import NamedTuple
 
 try:
     from PIL import Image, ImageTk, ImageDraw, IptcImagePlugin
@@ -129,25 +130,90 @@ def _uploads_enabled() -> bool:
     return bool(_store.load_op_params().get(UPLOADS_ENABLED_KEY, False))
 
 
-# Every setting PhotosEditor reads out of the params file: the key, what to
-# call it, what it does, and what it falls back to when the file does not say.
-# The Settings window is built from this, so a setting added to the program and
-# not to this list is one the user cannot see.
+class _Setting(NamedTuple):
+    """One setting in the params file, as the Settings window needs to know it.
+
+    restart_needed says whether changing it can take effect in the running
+    program.  Every setting here is read from the file at the moment it is
+    used -- inside a worker, or as an operation begins -- so none of them
+    currently need one.  The flag exists for a setting that is ever read once
+    at start-up and held: mark that one True and the window will offer the
+    restart rather than leaving the change looking applied when it is not.
+    """
+    key:            str
+    label:          str
+    default:        object
+    kind:           str      # "bool", "int" or "float"
+    description:    str
+    restart_needed: bool = False
+
+
+# Every setting PhotosEditor reads out of the params file.  The Settings window
+# is built from this, so a setting added to the program and not to this list is
+# one the user cannot see or change.
 _OP_PARAMS = [
-    (UPLOADS_ENABLED_KEY, "Uploading enabled", False,
-     "Whether anything may be written to Piwigo at all.  Off unless the file "
-     "says otherwise, so a lost or unreadable file leaves the server alone."),
-    ("max_upload_pixels", "Maximum upload size", None,
-     "Photos larger than this many pixels (width × height) are asked about "
-     "before uploading, rather than being sent or shrunk silently.  Blank "
-     "means no limit."),
-    ("sync_metadata", "Sync metadata after upload", True,
-     "Ask Piwigo to re-read the uploaded file's own metadata."),
-    ("refresh_representative", "Refresh album thumbnail", True,
-     "Ask Piwigo to re-pick the album's cover photo after an upload."),
-    ("rate_limit_calls_per_second", "Server calls per second", 2.0,
-     "How fast to talk to Piwigo.  Lower is gentler on the server."),
+    _Setting(UPLOADS_ENABLED_KEY, "Uploading enabled", False, "bool",
+             "Whether anything may be written to Piwigo at all.  Off unless the "
+             "file says otherwise, so a lost or unreadable file leaves the "
+             "server alone."),
+    _Setting("max_upload_pixels", "Maximum upload size", None, "int",
+             "Photos larger than this many pixels (width × height) are asked "
+             "about before uploading, rather than being sent or shrunk "
+             "silently.  Blank means no limit."),
+    _Setting("sync_metadata", "Sync metadata after upload", True, "bool",
+             "Ask Piwigo to re-read the uploaded file's own metadata."),
+    _Setting("refresh_representative", "Refresh album thumbnail", True, "bool",
+             "Ask Piwigo to re-pick the album's cover photo after an upload."),
+    _Setting("rate_limit_calls_per_second", "Server calls per second", 2.0,
+             "float",
+             "How fast to talk to Piwigo.  Lower is gentler on the server."),
 ]
+
+
+def _save_op_params(params: dict) -> bool:
+    """Replace the params file with exactly these settings.  True if written.
+
+    A whole-file write, not a key at a time: saving is also how a setting the
+    program no longer reads leaves the file.
+    """
+    try:
+        path = _store.params_file
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(params, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        logger.warning(f"Could not save the settings: {e}")
+        return False
+
+
+def _relaunch_command() -> list:
+    """How to start another copy of this program: the frozen exe, or this
+    script under the interpreter that is running it."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, str(Path(__file__).resolve())]
+
+
+def _parse_setting(setting: "_Setting", text: str):
+    """A typed value from what was typed, or ValueError with a readable reason.
+
+    Returns None for an empty box, meaning "not set" -- which is only allowed
+    where the setting has no default of its own to fall back to.
+    """
+    text = (text or "").strip()
+    if not text:
+        if setting.default is None:
+            return None
+        raise ValueError(f"{setting.label} cannot be blank")
+    try:
+        value = int(text.replace(",", "")) if setting.kind == "int" else float(text)
+    except ValueError:
+        want = "a whole number" if setting.kind == "int" else "a number"
+        raise ValueError(f"{setting.label} must be {want}")
+    if value <= 0:
+        raise ValueError(f"{setting.label} must be greater than zero")
+    return value
 
 def _truncate(text: str, max_len: int) -> str:
     return text if len(text) <= max_len else text[: max_len - 1] + "\u2026"
@@ -1172,6 +1238,7 @@ class PhotosEditor:
         self._ss_hidden:       int  = 0     # its faces too small to be worth showing
         self._ss_row_cells:    list = []    # each row's widgets, for the hover tint
         self._ss_hover              = None  # the face row under the pointer, if any
+        self._relaunch_on_exit      = False # a setting asked for a restart
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
         self._ss_face_hl_ids:  list = []    # canvas rings over the hovered face
 
@@ -5234,22 +5301,94 @@ class PhotosEditor:
         """
         params = _store.load_op_params()
         known = []
-        for key, label, default, description in _OP_PARAMS:
-            in_file = key in params
-            value = params[key] if in_file else default
-            known.append((label, _format_setting(value), in_file, description))
-        # Keys the file carries that this program never looks at -- leftovers
-        # from an older version, or another program's.  Better shown than not.
-        others = sorted((k, _format_setting(v)) for k, v in params.items()
-                        if k not in {p[0] for p in _OP_PARAMS})
-        return known, others
+        for setting in _OP_PARAMS:
+            in_file = setting.key in params
+            value = params[setting.key] if in_file else setting.default
+            known.append((setting.label, _format_setting(value), in_file,
+                          setting.description))
+        return known, PhotosEditor._unused_settings(params)
+
+    @staticmethod
+    def _unused_settings(params: dict) -> list:
+        """Keys the file carries that this program never reads -- leftovers from
+        an older version, or another program's.  Shown, and dropped on save."""
+        return sorted((k, _format_setting(v)) for k, v in params.items()
+                      if k not in {s.key for s in _OP_PARAMS})
+
+    @staticmethod
+    def _settings_to_write(values: dict) -> dict:
+        """The file as it should look, given the values from the window.
+
+        Only the settings this program reads, and only those that have a value:
+        a blank one is left out rather than written as null, and anything the
+        program does not read goes with it.
+        """
+        out = {}
+        for setting in _OP_PARAMS:
+            value = values.get(setting.key, setting.default)
+            if value is not None:
+                out[setting.key] = value
+        return out
+
+    def _unsaved_work(self) -> list:
+        """What would be lost by restarting now, in words.  Empty if nothing."""
+        blockers = []
+        if self._in_flight:
+            blockers += [f"{op.description} is still running" for op in self._in_flight]
+        self._save_current_custom_fields()
+        if self._photo_edited:
+            blockers.append("the photo on screen has been edited and not uploaded")
+        fields = self._unsaved_field_labels()
+        if fields:
+            blockers.append("changes to " + ", ".join(fields) + " have not been uploaded")
+        return blockers
+
+    def _offer_restart(self, settings: list):
+        """A saved setting cannot take effect until the program restarts.
+
+        The setting is already written, so nothing is riding on this: the
+        change is in the file whatever happens next.  What is at stake is only
+        whether it applies now or the next time PhotosEditor is started -- and
+        it is never worth throwing away unsaved work for, so if there is any,
+        the restart is not even offered.
+        """
+        named = ", ".join(settings)
+        blockers = self._unsaved_work()
+        if blockers:
+            messagebox.showinfo(
+                "Saved — Restart Later",
+                f"{named} needs PhotosEditor to be restarted before it takes "
+                f"effect.\n\nNot restarting now, because:\n\n  "
+                + "\n  ".join(blockers)
+                + "\n\nThe setting is saved and will apply the next time you "
+                  "start PhotosEditor.", parent=self.root)
+            return
+        if not messagebox.askyesno(
+                "Restart to Apply?",
+                f"{named} needs PhotosEditor to be restarted before it takes "
+                "effect.\n\nThe setting is saved either way.\n\nRestart now?",
+                parent=self.root):
+            self.set_status("Saved — it will apply the next time PhotosEditor starts.")
+            return
+        # _on_close does the usual saving of window state and albums, and can
+        # still stop for a question, so only relaunch if it really closed.
+        self._relaunch_on_exit = True
+        self._on_close()
+        if self._relaunch_on_exit and self.root.winfo_exists():
+            self._relaunch_on_exit = False      # something said no; stay put
 
     def _show_settings(self):
-        """Show the parameters file as it currently stands.  Read-only: the
-        file is edited in a text editor, or by the choices that write to it."""
+        """Show and change the parameters file.
+
+        Save writes it and the change is in force at once, every setting being
+        read from the file at the moment it is used.  Should one ever need a
+        restart, Save offers it -- and refuses to take one while there is work
+        that a restart would throw away.
+        """
         dlg = tk.Toplevel(self.root)
         dlg.title("PhotosEditor Settings")
         dlg.transient(self.root)
+        dlg.grab_set()
 
         body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
         body.pack(fill="both", expand=True)
@@ -5262,43 +5401,50 @@ class PhotosEditor:
 
         rows = ttk.Frame(body)
         rows.grid(row=2, column=0, columnspan=3, sticky="nsew")
-        rows.columnconfigure(1, weight=1)
+        rows.columnconfigure(2, weight=1)
 
-        def fill():
-            for w in rows.winfo_children():
-                w.destroy()
-            known, others = self._settings_rows()
-            r = 0
-            for label, value, in_file, description in known:
-                ttk.Label(rows, text=f"{label}:", anchor="e", width=26).grid(
-                    row=r, column=0, sticky="e", pady=(4, 0))
-                ttk.Label(rows, text=value, font=("TkDefaultFont", 10, "bold"),
-                          foreground="black" if in_file else "gray").grid(
-                              row=r, column=1, sticky="w", padx=(8, 6), pady=(4, 0))
-                ttk.Label(rows, text="" if in_file else "(default — not in the file)",
-                          foreground="gray", font=("TkDefaultFont", 8)).grid(
-                              row=r, column=2, sticky="w", pady=(4, 0))
-                ttk.Label(rows, text=description, foreground="#555555",
-                          font=("TkDefaultFont", 8), wraplength=430,
-                          justify="left").grid(row=r + 1, column=1, columnspan=2,
-                                               sticky="w", padx=(8, 0))
-                r += 2
-            if others:
-                ttk.Separator(rows, orient="horizontal").grid(
-                    row=r, column=0, columnspan=3, sticky="ew", pady=(12, 6))
-                ttk.Label(rows, text="Also in the file, but not used by "
-                                     "PhotosEditor:", foreground="gray",
-                          font=("TkDefaultFont", 8)).grid(
-                              row=r + 1, column=0, columnspan=3, sticky="w")
-                r += 2
-                for key, value in others:
-                    ttk.Label(rows, text=f"{key}:", anchor="e", width=26,
-                              foreground="gray").grid(row=r, column=0, sticky="e")
-                    ttk.Label(rows, text=value, foreground="gray").grid(
-                        row=r, column=1, sticky="w", padx=(8, 0))
-                    r += 1
+        params  = _store.load_op_params()
+        widgets = {}                    # key -> the variable holding its value
+        r = 0
+        for setting in _OP_PARAMS:
+            in_file = setting.key in params
+            value = params[setting.key] if in_file else setting.default
+            ttk.Label(rows, text=f"{setting.label}:", anchor="e", width=26).grid(
+                row=r, column=0, sticky="e", pady=(6, 0))
+            if setting.kind == "bool":
+                var = tk.BooleanVar(value=bool(value))
+                ttk.Checkbutton(rows, variable=var).grid(
+                    row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
+            else:
+                var = tk.StringVar(value="" if value is None else str(value))
+                ttk.Entry(rows, textvariable=var, width=14).grid(
+                    row=r, column=1, sticky="w", padx=(8, 6), pady=(6, 0))
+            widgets[setting.key] = var
+            ttk.Label(rows, text="" if in_file else "(default — not in the file)",
+                      foreground="gray", font=("TkDefaultFont", 8)).grid(
+                          row=r, column=2, sticky="w", pady=(6, 0))
+            ttk.Label(rows, text=setting.description, foreground="#555555",
+                      font=("TkDefaultFont", 8), wraplength=430,
+                      justify="left").grid(row=r + 1, column=1, columnspan=2,
+                                           sticky="w", padx=(8, 0))
+            r += 2
 
-        fill()
+        unused = self._unused_settings(params)
+        if unused:
+            ttk.Separator(rows, orient="horizontal").grid(
+                row=r, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+            ttk.Label(rows, text="In the file but not used by PhotosEditor.  "
+                                 "Saving will take these out:",
+                      foreground="gray", font=("TkDefaultFont", 8),
+                      wraplength=460, justify="left").grid(
+                          row=r + 1, column=0, columnspan=3, sticky="w")
+            r += 2
+            for key, value in unused:
+                ttk.Label(rows, text=f"{key}:", anchor="e", width=26,
+                          foreground="gray").grid(row=r, column=0, sticky="e")
+                ttk.Label(rows, text=value, foreground="gray").grid(
+                    row=r, column=1, sticky="w", padx=(8, 0))
+                r += 1
 
         ttk.Separator(body, orient="horizontal").grid(
             row=3, column=0, columnspan=3, sticky="ew", pady=(12, 6))
@@ -5309,13 +5455,66 @@ class PhotosEditor:
                   wraplength=520, justify="left").grid(
                       row=4, column=0, columnspan=3, sticky="w")
 
+        def collect():
+            """The typed values, or None having said what is wrong with them."""
+            out, bad = {}, []
+            for setting in _OP_PARAMS:
+                if setting.kind == "bool":
+                    out[setting.key] = bool(widgets[setting.key].get())
+                    continue
+                try:
+                    out[setting.key] = _parse_setting(setting,
+                                                      widgets[setting.key].get())
+                except ValueError as e:
+                    bad.append(str(e))
+            if bad:
+                messagebox.showerror("That cannot be saved", "\n".join(bad),
+                                     parent=dlg)
+                return None
+            return out
+
+        def save():
+            values = collect()
+            if values is None:
+                return
+            before = _store.load_op_params()
+            after  = self._settings_to_write(values)
+            if after == before:
+                dlg.destroy()               # nothing to do, so do nothing
+                return
+            # What actually changed is a change of *effect*: a default written
+            # down explicitly is not one, and neither is a key removed that the
+            # program never read.  Both are worth doing and neither is news.
+            changed = [s for s in _OP_PARAMS
+                       if before.get(s.key, s.default) != after.get(s.key, s.default)]
+            removed = [key for key, _ in self._unused_settings(before)]
+            if not _save_op_params(after):
+                messagebox.showerror(
+                    "Could not save", "The settings file could not be written, "
+                    "so nothing has been changed.", parent=dlg)
+                return
+            dlg.destroy()
+            said = []
+            if changed:
+                said.append(", ".join(s.label.lower() for s in changed))
+            if removed:
+                said.append(f"{len(removed)} unused setting"
+                            f"{'s' if len(removed) != 1 else ''} removed")
+            self.set_status("Settings saved" + (": " + "; ".join(said) if said else "."))
+            # Everything is read from the file where it is used, so a change is
+            # already in force.  Only a setting marked otherwise needs more.
+            restart_for = [s.label for s in changed if s.restart_needed]
+            if restart_for:
+                self._offer_restart(restart_for)
+
         buttons = ttk.Frame(dlg, padding=(16, 4, 16, 14))
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="Re-read the file", command=fill).pack(side="left")
-        close = ttk.Button(buttons, text="Close", command=dlg.destroy)
-        close.pack(side="right")
-        dlg.bind("<Escape>", lambda e: dlg.destroy())
-        close.focus_set()
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(side="right")
+        save_btn = ttk.Button(buttons, text="Save", command=save)
+        save_btn.pack(side="right", padx=(0, 8))
+        dlg.bind("<Escape>", lambda e: dlg.destroy())      # Cancel
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)      # so is the close box
+        save_btn.focus_set()
 
         self.root.update_idletasks()
         dlg.update_idletasks()
@@ -5520,8 +5719,13 @@ class PhotosEditor:
 # ---------------------------------------------------------------------------
 def main():
     root = tk.Tk()
-    PhotosEditor(root)
+    app = PhotosEditor(root)
     root.mainloop()
+    # A setting that could not take effect in the running program asked for a
+    # restart.  Doing it out here, after the window has gone and its state has
+    # been saved, rather than from inside a callback with Tk half torn down.
+    if getattr(app, "_relaunch_on_exit", False):
+        subprocess.Popen(_relaunch_command(), cwd=str(_SCRIPT_DIR))
 
 
 if __name__ == "__main__":

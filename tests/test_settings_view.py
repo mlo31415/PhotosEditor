@@ -113,6 +113,121 @@ class HowValuesAreWritten(unittest.TestCase):
         self.assertEqual(pe._format_setting("."), ".")
 
 
+class WhatGetsWritten(Rows):
+    """Saving replaces the file, which is also how a setting the program no
+    longer reads leaves it."""
+
+    def written(self, values):
+        out = pe.PhotosEditor._settings_to_write(values)
+        self.assertTrue(pe._save_op_params(out))
+        return json.loads((self.tmp / "PhotosEditor Params.json").read_text())
+
+    def test_the_settings_are_written(self):
+        on_disk = self.written({"uploads_enabled": True,
+                                "max_upload_pixels": 2000000,
+                                "sync_metadata": False,
+                                "refresh_representative": True,
+                                "rate_limit_calls_per_second": 1.5})
+        self.assertEqual(on_disk["uploads_enabled"], True)
+        self.assertEqual(on_disk["max_upload_pixels"], 2000000)
+        self.assertEqual(on_disk["rate_limit_calls_per_second"], 1.5)
+
+    def test_a_key_the_program_does_not_read_is_dropped(self):
+        self.write({"path": ".", "left_over": 7, "uploads_enabled": True})
+        on_disk = self.written({"uploads_enabled": True})
+        self.assertNotIn("path", on_disk)
+        self.assertNotIn("left_over", on_disk)
+
+    def test_a_blank_setting_is_left_out_rather_than_written_as_null(self):
+        on_disk = self.written({"max_upload_pixels": None})
+        self.assertNotIn("max_upload_pixels", on_disk)
+
+    def test_what_is_written_reads_back_the_same(self):
+        self.written({"uploads_enabled": True, "max_upload_pixels": 500,
+                      "sync_metadata": False, "refresh_representative": False,
+                      "rate_limit_calls_per_second": 3.0})
+        known, others = self.rows()
+        self.assertEqual(known["Uploading enabled"], ("Yes", True))
+        self.assertEqual(known["Maximum upload size"], ("500", True))
+        self.assertEqual(known["Refresh album thumbnail"], ("No", True))
+        self.assertEqual(others, [])
+
+
+class ReadingWhatWasTyped(unittest.TestCase):
+
+    def setting(self, key):
+        return next(s for s in pe._OP_PARAMS if s.key == key)
+
+    def test_a_number_is_taken(self):
+        self.assertEqual(pe._parse_setting(self.setting("max_upload_pixels"),
+                                           "4000000"), 4000000)
+
+    def test_separators_are_forgiven(self):
+        """The window shows 4,000,000, so it has to accept it back."""
+        self.assertEqual(pe._parse_setting(self.setting("max_upload_pixels"),
+                                           "4,000,000"), 4000000)
+
+    def test_a_blank_means_not_set_where_that_is_allowed(self):
+        self.assertIsNone(pe._parse_setting(self.setting("max_upload_pixels"), "  "))
+
+    def test_a_blank_is_refused_where_there_is_a_default_to_lose(self):
+        with self.assertRaises(ValueError):
+            pe._parse_setting(self.setting("rate_limit_calls_per_second"), "")
+
+    def test_words_are_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            pe._parse_setting(self.setting("max_upload_pixels"), "lots")
+        self.assertIn("whole number", str(caught.exception))
+
+    def test_a_fraction_is_refused_where_a_whole_number_is_wanted(self):
+        with self.assertRaises(ValueError):
+            pe._parse_setting(self.setting("max_upload_pixels"), "3.5")
+
+    def test_zero_and_below_are_refused(self):
+        for text in ("0", "-1"):
+            with self.subTest(text):
+                with self.assertRaises(ValueError) as caught:
+                    pe._parse_setting(self.setting("rate_limit_calls_per_second"), text)
+                self.assertIn("greater than zero", str(caught.exception))
+
+
+class WhenARestartIsNeeded(unittest.TestCase):
+    """Every setting is read from the file where it is used, so none of them
+    need one today.  The machinery is here for one that ever does."""
+
+    def test_nothing_currently_asks_for_a_restart(self):
+        self.assertEqual([s.key for s in pe._OP_PARAMS if s.restart_needed], [])
+
+    def test_no_setting_is_read_once_at_start_up(self):
+        """Which is why nothing needs a restart.  If a params read ever moves
+        into __init__ or module scope, this fails and the flag must be set."""
+        import ast
+        source = Path(pe.__file__).read_text(encoding="utf-8")
+
+        class Where(ast.NodeVisitor):
+            def __init__(self):
+                self.stack, self.bad = [], []
+
+            def visit_FunctionDef(self, node):
+                self.stack.append(node.name)
+                self.generic_visit(node)
+                self.stack.pop()
+
+            def visit_Call(self, node):
+                func = node.func
+                if (isinstance(func, ast.Attribute)
+                        and func.attr == "load_op_params"
+                        and (not self.stack or self.stack[0] == "__init__")):
+                    self.bad.append(node.lineno)
+                self.generic_visit(node)
+
+        finder = Where()
+        finder.visit(ast.parse(source))
+        self.assertEqual(finder.bad, [],
+                         "a setting is now read at start-up and held; the "
+                         "matching _OP_PARAMS entry needs restart_needed=True")
+
+
 class TheListItself(unittest.TestCase):
 
     def test_it_covers_every_key_the_program_reads(self):
@@ -125,7 +240,7 @@ class TheListItself(unittest.TestCase):
             self.skipTest("no source to scan")
         read = set(re.findall(r"params\.get\('([a-z_]+)'", source))
         read |= set(re.findall(r"load_op_params\(\)\.get\('([a-z_]+)'", source))
-        listed = {key for key, _, _, _ in pe._OP_PARAMS}
+        listed = {s.key for s in pe._OP_PARAMS}
         self.assertEqual(read - listed, set(),
                          "settings read by the program but missing from _OP_PARAMS")
 
