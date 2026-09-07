@@ -156,6 +156,10 @@ class _Setting(NamedTuple):
     # `scale`, named by `unit`.  The file always keeps the plain number.
     scale:          float = 1
     unit:           str = ""
+    # A folder setting wanted for the files in it is browsed for by picking one
+    # of them: the folder chooser shows no files, so it cannot be used to tell
+    # the right folder from a wrong one.  browse_glob is what to show.
+    browse_glob:    str = ""
 
 
 # Every setting PhotosEditor reads out of the params file.  The Settings window
@@ -181,8 +185,35 @@ _OP_PARAMS = [
     _Setting(SS_REVIEW_DIR_KEY, "SlideShow output folder", None, "folder",
              "Where Review SS Comments looks for the "
              f'"{SS_LOG_GLOB}" files.  That one folder only -- it does not '
-             "look inside folders within it."),
+             "look inside folders within it.",
+             browse_glob=SS_LOG_GLOB),
 ]
+
+
+def _count_matching(folder: str, glob: str) -> int:
+    """How many files in folder match glob.  -1 if there is no such folder."""
+    try:
+        path = Path(folder)
+        return len(list(path.glob(glob))) if path.is_dir() else -1
+    except Exception:
+        return -1
+
+
+def _pick_folder_by_its_files(parent, title: str, glob: str,
+                              initialdir: str = "") -> str:
+    """Choose a folder by picking one of the files in it.
+
+    The folder chooser shows only folders, so it cannot be used to tell the
+    right folder from an empty one -- which is the whole question when what is
+    wanted is the folder holding a particular kind of file.  A file chooser
+    filtered to that kind shows them, and its answer's parent is the folder.
+    """
+    chosen = filedialog.askopenfilename(
+        parent=parent, title=title,
+        initialdir=initialdir if initialdir and Path(initialdir).is_dir() else None,
+        filetypes=[(f"SlideShow output files ({glob})", glob),
+                   ("All files", "*.*")])
+    return str(Path(chosen).resolve().parent) if chosen else ""
 
 
 def _ss_review_dir() -> str:
@@ -2736,12 +2767,11 @@ class PhotosEditor:
         d = _ss_review_dir()
         while True:
             if not d or not Path(d).is_dir():
-                d = filedialog.askdirectory(
-                    parent=self.root, mustexist=True,
-                    title="Select the directory containing the SlideShow output files")
+                d = _pick_folder_by_its_files(
+                    self.root, f"Select any {SS_LOG_GLOB} file in the folder",
+                    SS_LOG_GLOB, d)
                 if not d:
                     return
-                d = str(Path(d).resolve())
             # Every log in the folder, photos with several records first
             records = _collect_ss_records(Path(d))
             if records:
@@ -5437,10 +5467,17 @@ class PhotosEditor:
         """The Browse button beside a folder setting.  Opens where the setting
         already points, so choosing a neighbour of it is a short trip."""
         current = (var.get() or "").strip()
-        chosen = filedialog.askdirectory(
-            parent=parent, mustexist=True,
-            title=f"Select the {setting.label.lower()}",
-            initialdir=current if current and Path(current).is_dir() else None)
+        if setting.browse_glob:
+            # Pick one of the files that make it the right folder, so they can
+            # be seen while looking
+            chosen = _pick_folder_by_its_files(
+                parent, f"Select any {setting.browse_glob} file in the folder",
+                setting.browse_glob, current)
+        else:
+            chosen = filedialog.askdirectory(
+                parent=parent, mustexist=True,
+                title=f"Select the {setting.label.lower()}",
+                initialdir=current if current and Path(current).is_dir() else None)
         if chosen:
             var.set(str(Path(chosen).resolve()))
 
@@ -5527,6 +5564,26 @@ class PhotosEditor:
                            command=lambda v=var, s=setting:
                                self._browse_for_folder(dlg, v, s)).pack(
                                    side="left", padx=(4, 0))
+                if setting.browse_glob:
+                    # Say what is in the folder named in the box, so the right
+                    # one can be told from a wrong one without leaving here
+                    found = ttk.Label(rows, foreground="gray",
+                                      font=("TkDefaultFont", 8))
+                    found.grid(row=r + 1, column=1, columnspan=2, sticky="w",
+                               padx=(8, 0))
+
+                    def count(*_, v=var, s=setting, lbl=found):
+                        folder = (v.get() or "").strip()
+                        n = _count_matching(folder, s.browse_glob)
+                        lbl.config(
+                            text="" if not folder else
+                            "there is no such folder" if n < 0 else
+                            f"no {s.browse_glob} files in it" if n == 0 else
+                            f"{n} {s.browse_glob} file{'s' if n != 1 else ''} in it",
+                            foreground="gray" if n > 0 else "#a04000")
+                    var.trace_add("write", count)
+                    count()
+                    r += 1              # the count takes a line of its own
             else:
                 var = tk.StringVar(value=_setting_display(setting, value))
                 box = ttk.Frame(rows)
