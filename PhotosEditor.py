@@ -1352,6 +1352,7 @@ class PhotosEditor:
         self._ss_columns:      list = []    # its reports, as shown
         self._ss_hidden:       int  = 0     # its faces too small to be worth showing
         self._ss_row_cells:    list = []    # each row's widgets, for the hover tint
+        self._ss_cell_vars:    list = []    # the name cells' variables, kept alive
         self._ss_hover              = None  # the face row under the pointer, if any
         self._relaunch_on_exit      = False # a setting asked for a restart
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
@@ -2938,6 +2939,7 @@ class PhotosEditor:
         self._ss_face_thumbs = []       # keeps PhotoImage references alive
         self._ss_face_labels = []       # one per face row, filled in by the worker
         self._ss_row_cells   = []       # the widgets of each row, for the hover tint
+        self._ss_cell_vars   = []       # the name cells' variables, kept alive
         self._ss_hover       = None     # the row rebuilt out from under any hover
 
         grid = self._ss_matrix_frame
@@ -2968,15 +2970,20 @@ class PhotosEditor:
 
             comment = col["comment"]
             if comment:
-                # A long comment gets a smaller font rather than a taller row
+                # A long comment gets a smaller font rather than a taller row.
+                # A Text rather than a Message so it can be selected and copied
+                # -- it is the reviewer's words, and often wanted verbatim.
                 lines = 1 + len(comment) // self._SS_COL_WIDTH
                 size  = 9 if lines <= self._SS_COMMENT_MAX else (
                         8 if lines <= self._SS_COMMENT_MAX * 2 else 7)
-                tk.Message(grid, text=comment, bg=bg, fg=_SS_USER_TEXT_FG,
-                           font=("TkDefaultFont", size),
-                           width=self._SS_COL_WIDTH * 7, anchor="nw",
-                           justify="left").grid(row=COMMENT, column=c,
-                                                sticky="new", padx=(10, 0))
+                box = tk.Text(grid, bg=bg, fg=_SS_USER_TEXT_FG,
+                              font=("TkDefaultFont", size), wrap="word",
+                              width=self._SS_COL_WIDTH, height=min(lines, 12),
+                              relief="flat", bd=0, highlightthickness=0,
+                              cursor="xterm", padx=0, pady=0)
+                box.insert("1.0", comment)
+                box.configure(state="disabled")     # readable, selectable, not editable
+                box.grid(row=COMMENT, column=c, sticky="new", padx=(10, 0))
 
         if not columns:
             tk.Label(grid, text="(no identifications in these reports)",
@@ -3002,11 +3009,25 @@ class PhotosEditor:
 
             for c, col in enumerate(columns, start=1):
                 name = col["names"].get(face["key"], "")
-                cell = tk.Label(grid, text=name or "—", bg=bg,
-                                fg=_SS_USER_TEXT_FG if name else "#b0b0b0",
-                                font=("TkDefaultFont", 11, "bold") if name
-                                else ("TkDefaultFont", 11),
-                                anchor="w", width=self._SS_COL_WIDTH)
+                if name:
+                    # A read-only Entry rather than a Label, so the name can be
+                    # selected and copied into the editor beside it.  Flat and
+                    # borderless, so it still reads as a piece of the table.
+                    var = tk.StringVar(value=name)
+                    self._ss_cell_vars.append(var)      # keep it alive
+                    # bg as well as readonlybackground: only the second shows
+                    # while it is read-only, but leaving the first at its
+                    # default would make the cell inconsistent with the row
+                    cell = tk.Entry(grid, textvariable=var, state="readonly",
+                                    bg=bg, readonlybackground=bg,
+                                    fg=_SS_USER_TEXT_FG,
+                                    font=("TkDefaultFont", 11, "bold"),
+                                    relief="flat", bd=0, highlightthickness=0,
+                                    width=self._SS_COL_WIDTH, cursor="xterm")
+                else:
+                    cell = tk.Label(grid, text="—", bg=bg, fg="#b0b0b0",
+                                    font=("TkDefaultFont", 11), anchor="w",
+                                    width=self._SS_COL_WIDTH)
                 cell.grid(row=row, column=c, sticky="w", padx=(10, 0))
                 cells.append(cell)
             self._ss_row_cells.append(cells)
@@ -3207,6 +3228,10 @@ class PhotosEditor:
         for widget in self._ss_row_cells[index]:
             try:
                 widget.config(bg=bg)
+                # A read-only Entry shows readonlybackground, not bg, so the
+                # name cells would stay pale while the rest of the row lit up
+                if "readonlybackground" in widget.keys():
+                    widget.config(readonlybackground=bg)
             except tk.TclError:
                 pass                        # the matrix was rebuilt under us
         if index < len(self._ss_face_labels):
