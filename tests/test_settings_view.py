@@ -290,7 +290,7 @@ class TheSlideShowFolder(Rows):
 
     def test_it_is_a_setting_the_window_shows(self):
         known, _ = self.rows({})
-        self.assertIn("SlideShow output folder", known)
+        self.assertIn("SlideShow Files Folder", known)
 
     def test_an_absolute_folder_is_taken_as_it_is(self):
         self.assertEqual(pe._parse_setting(self.setting(), str(self.tmp)),

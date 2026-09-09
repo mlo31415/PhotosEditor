@@ -182,7 +182,7 @@ _OP_PARAMS = [
     _Setting("rate_limit_calls_per_second", "Server calls per second", 2.0,
              "float",
              "How fast to talk to Piwigo.  Lower is gentler on the server."),
-    _Setting(SS_REVIEW_DIR_KEY, "SlideShow output folder", None, "folder",
+    _Setting(SS_REVIEW_DIR_KEY, "SlideShow Files Folder", None, "folder",
              "Where Review SS Comments looks for the "
              f'"{SS_LOG_GLOB}" files.  That one folder only -- it does not '
              "look inside folders within it.",
