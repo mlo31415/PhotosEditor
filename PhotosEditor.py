@@ -2991,6 +2991,8 @@ class PhotosEditor:
                               cursor="xterm", padx=0, pady=0)
                 box.insert("1.0", comment)
                 box.configure(state="disabled")     # readable, selectable, not editable
+                box.bind("<Control-a>", self._ss_select_all)
+                box.bind("<Control-A>", self._ss_select_all)
                 box.grid(row=COMMENT, column=c, sticky="new", padx=(10, 0))
 
         if not columns:
@@ -3033,6 +3035,12 @@ class PhotosEditor:
                                     font=("TkDefaultFont", 11, "bold"),
                                     relief="flat", bd=0, highlightthickness=0,
                                     width=self._SS_COL_WIDTH, cursor="xterm")
+                    cell.bind("<Control-a>", self._ss_select_all)
+                    cell.bind("<Control-A>", self._ss_select_all)
+                    # A name wider than the column is all still in there; the
+                    # tooltip is so it can be read without selecting it first
+                    _Tooltip(lambda w=cell, t=name:
+                             self._ss_hidden_text(w, t)).attach(cell)
                 else:
                     cell = tk.Label(grid, text="—", bg=bg, fg="#b0b0b0",
                                     font=("TkDefaultFont", 11), anchor="w",
@@ -3185,6 +3193,35 @@ class PhotosEditor:
             except Exception:
                 pass                        # canvas already gone (mode exited)
         self._ss_face_hl_ids = []
+
+    @staticmethod
+    def _ss_select_all(event):
+        """Ctrl+A in a record cell selects the whole of it.
+
+        Tk gives Ctrl+A its emacs meaning -- go to the start of the line -- so
+        the gesture everyone reaches for did nothing, which matters most on a
+        cell too narrow to show what it holds.
+        """
+        widget = event.widget
+        if isinstance(widget, tk.Text):
+            widget.tag_add("sel", "1.0", "end-1c")
+        else:
+            widget.selection_range(0, "end")
+            widget.icursor("end")
+        return "break"
+
+    @staticmethod
+    def _ss_hidden_text(widget, text: str) -> str:
+        """The cell's full text when it does not fit, for a tooltip; nothing
+        when all of it is on show and a tooltip would only be in the way."""
+        try:
+            width = widget.winfo_width()
+            if width <= 1:              # not laid out yet: assume it fits
+                return ""
+            needed = tkfont.Font(font=widget.cget("font")).measure(text)
+            return text if needed > width - 8 else ""
+        except Exception:
+            return ""
 
     def _ss_show_thumb(self, label, key):
         """Put an already-cut face picture on a freshly built row.
