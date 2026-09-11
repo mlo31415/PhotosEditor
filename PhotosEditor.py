@@ -1353,6 +1353,7 @@ class PhotosEditor:
         self._ss_hidden:       int  = 0     # its faces too small to be worth showing
         self._ss_row_cells:    list = []    # each row's widgets, for the hover tint
         self._ss_cell_vars:    list = []    # the name cells' variables, kept alive
+        self._ss_face_thumbs:  dict = {}    # face key -> its (plain, lit) pictures
         self._ss_hover              = None  # the face row under the pointer, if any
         self._relaunch_on_exit      = False # a setting asked for a restart
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
@@ -2936,7 +2937,6 @@ class PhotosEditor:
         bg = self._ss_faces_bg
         for w in self._ss_matrix_frame.winfo_children():
             w.destroy()
-        self._ss_face_thumbs = []       # keeps PhotoImage references alive
         self._ss_face_labels = []       # one per face row, filled in by the worker
         self._ss_row_cells   = []       # the widgets of each row, for the hover tint
         self._ss_cell_vars   = []       # the name cells' variables, kept alive
@@ -3006,6 +3006,7 @@ class PhotosEditor:
             thumb_lbl.bind("<Enter>", lambda e, i=r: self._ss_set_hover(i))
             thumb_lbl.bind("<Leave>", lambda e: self._ss_set_hover(None))
             self._ss_face_labels.append(thumb_lbl)
+            self._ss_show_thumb(thumb_lbl, face["key"])
 
             for c, col in enumerate(columns, start=1):
                 name = col["names"].get(face["key"], "")
@@ -3095,6 +3096,7 @@ class PhotosEditor:
             state="normal" if self._ss_group_index < len(self._ss_groups) - 1
             else "disabled")
 
+        self._ss_face_thumbs = {}       # another photo, so other faces
         self._ss_set_rows_and_columns(group)
         self._ss_build_matrix(self._ss_rows, self._ss_columns)
 
@@ -3151,6 +3153,21 @@ class PhotosEditor:
             except Exception:
                 pass                        # canvas already gone (mode exited)
         self._ss_face_hl_ids = []
+
+    def _ss_show_thumb(self, label, key):
+        """Put an already-cut face picture on a freshly built row.
+
+        The matrix is rebuilt whenever a report is dismissed, which throws away
+        the labels the photo's load had filled in -- and that load is long
+        over, so nothing would fill the new ones.  The pictures are kept by
+        face for as long as the photo is on show, so the column of faces
+        survives closing a column beside it.
+        """
+        pair = self._ss_face_thumbs.get(key)
+        if pair is None:
+            return                      # not cut yet: the load will do it
+        label._plain_thumb, label._hl_thumb = pair
+        label.config(image=pair[0], text="", width=0)
 
     # ── One hovered face, whichever half of the screen the pointer is in ─────
     def _ss_set_hover(self, index: "int | None"):
@@ -3456,7 +3473,9 @@ class PhotosEditor:
                             logger.warning(f"Face thumbnail failed for box {box}",
                                            exc_info=True)
                             continue
-                        self._ss_face_thumbs += [thumb, hl]
+                        # Kept by face, not by label: the labels are rebuilt
+                        # every time a report is dismissed
+                        self._ss_face_thumbs[face["key"]] = (thumb, hl)
                         lbl._plain_thumb, lbl._hl_thumb = thumb, hl
                         lbl.config(image=thumb, text="", width=0)
                 elif rows:
