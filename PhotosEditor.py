@@ -190,6 +190,14 @@ _OP_PARAMS = [
 ]
 
 
+def _is_missing_photo(error: Exception) -> bool:
+    """Whether Piwigo's answer means the photo is gone rather than that the
+    fetch went wrong.  Piwigo says "image_id not found" with a 404; a network
+    that is merely down says neither, and must not be reported as a deletion."""
+    text = str(error).lower()
+    return "image_id not found" in text or "404" in text
+
+
 def _count_matching(folder: str, glob: str) -> int:
     """How many files in folder match glob.  -1 if there is no such folder."""
     try:
@@ -3104,15 +3112,39 @@ class PhotosEditor:
         self._ss_load_gen += 1
         pid = rec.get("photo id")
         if pid is None:
-            self._ss_set_busy(False)
-            self.photo_label_var.set("No photo selected")
-            self.set_status("These reports carry no Piwigo photo id — "
-                            "the photo cannot be loaded.")
+            self._ss_photo_unavailable(
+                "No photo to show",
+                "These reports carry no Piwigo photo id.")
             return
         self._ss_set_busy(True)         # fetching it can take a noticeable while
         threading.Thread(target=self._ss_worker_load_photo,
                          args=(self._ss_rows, int(pid), self._ss_load_gen),
                          daemon=True).start()
+
+    def _ss_photo_unavailable(self, heading: str, why: str):
+        """Say on the photo side that there is no photo to show, and why.
+
+        The reports still stand -- they are read from the log, not the server
+        -- so the review is usable; what must not happen is the pane sitting at
+        "Loading…" as though it were still trying, which reads as a hang rather
+        than as an answer.
+        """
+        self._ss_set_busy(False)
+        self.photo_label_var.set(heading)
+        self.set_status(f"{heading}: {why}")
+        try:
+            self.canvas.delete("all")
+            width  = max(self.canvas.winfo_width(), 1)
+            height = max(self.canvas.winfo_height(), 1)
+            self.canvas.create_text(
+                width // 2, height // 2, fill="#c0c0c0", justify="center",
+                font=("TkDefaultFont", 11),
+                width=max(width - 40, 100),
+                text=f"{heading}\n\n{why}\n\n"
+                     "The reports beside it are still readable.  Use Skip to "
+                     "clear them and move on.")
+        except tk.TclError:
+            pass                        # the canvas has gone with the mode
 
     # ── Ringing the hovered face on the photo ────────────────────────────────
     def _ss_highlight_face(self, box):
@@ -3454,7 +3486,9 @@ class PhotosEditor:
                 # _on_thumb_click, and that is the long part.  The wait cursor
                 # stays on until it lands -- unless there is nothing to fetch.
                 if not self._on_thumb_click(info):
-                    self._ss_set_busy(False)
+                    self._ss_photo_unavailable(
+                        f"Photo {photo_id} cannot be shown",
+                        "Piwigo has no image file for it.")
                 if img is not None:
                     # The labels were built from these same rows, in this order
                     for lbl, face in zip(self._ss_face_labels, rows):
@@ -3484,10 +3518,20 @@ class PhotosEditor:
             self.root.after(0, _apply)
         except Exception as e:
             logger.warning(f"Could not load photo {photo_id} for SS review: {e}")
-            self.root.after(0, lambda e=e: (
-                gen == self._ss_load_gen and self._ss_review_frame is not None and
-                (self._ss_set_busy(False),
-                 self.set_status(f"Could not load photo {photo_id}: {e}"))))
+
+            def failed(e=e):
+                if gen != self._ss_load_gen or self._ss_review_frame is None:
+                    return
+                if _is_missing_photo(e):
+                    # The log outlives the photo: a report can name a photo
+                    # that has since been deleted from Piwigo
+                    self._ss_photo_unavailable(
+                        f"Photo {photo_id} is no longer on Piwigo",
+                        "It has been deleted since this report was written.")
+                else:
+                    self._ss_photo_unavailable(
+                        f"Photo {photo_id} could not be loaded", str(e))
+            self.root.after(0, failed)
 
     # -----------------------------------------------------------------------
     # Unified thumbnail press / motion / release  (both sides, click + drag)
