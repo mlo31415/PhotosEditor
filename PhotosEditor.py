@@ -1362,6 +1362,8 @@ class PhotosEditor:
         self._ss_row_cells:    list = []    # each row's widgets, for the hover tint
         self._ss_cell_vars:    list = []    # the name cells' variables, kept alive
         self._ss_face_thumbs:  dict = {}    # face key -> its (plain, lit) pictures
+        self._ss_expanded           = None  # the name cell opened out by a click
+        self._ss_expanded_grid:dict = {}    # where it sat before it was opened
         self._ss_hover              = None  # the face row under the pointer, if any
         self._relaunch_on_exit      = False # a setting asked for a restart
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
@@ -1595,6 +1597,7 @@ class PhotosEditor:
         # Motion does not fire while a crop is being dragged, which uses B1.
         self.canvas.bind("<Motion>", self._ss_on_canvas_motion, add="+")
         self.canvas.bind("<Leave>",  lambda e: self._ss_set_hover(None), add="+")
+        self.canvas.bind("<Button-1>", self._ss_collapse_cell, add="+")
 
         def _enforce_canvas_min_width(event):
             min_w = int(event.width * 0.60)
@@ -2923,6 +2926,10 @@ class PhotosEditor:
         self._ss_matrix_canvas = canvas
         self._ss_matrix_frame  = inner
         self._ss_hscroll       = hscroll
+        # Clicking the empty part of the matrix is "somewhere else" too: those
+        # take no focus, so the cell would otherwise stay open
+        canvas.bind("<Button-1>", self._ss_collapse_cell, add="+")
+        inner.bind("<Button-1>", self._ss_collapse_cell, add="+")
 
         nav = ttk.Frame(parent)
         nav.pack(pady=10)
@@ -2946,6 +2953,7 @@ class PhotosEditor:
         for w in self._ss_matrix_frame.winfo_children():
             w.destroy()
         self._ss_face_labels = []       # one per face row, filled in by the worker
+        self._ss_expanded    = None     # the cells are about to be destroyed
         self._ss_row_cells   = []       # the widgets of each row, for the hover tint
         self._ss_cell_vars   = []       # the name cells' variables, kept alive
         self._ss_hover       = None     # the row rebuilt out from under any hover
@@ -3037,6 +3045,10 @@ class PhotosEditor:
                                     width=self._SS_COL_WIDTH, cursor="xterm")
                     cell.bind("<Control-a>", self._ss_select_all)
                     cell.bind("<Control-A>", self._ss_select_all)
+                    # Clicking it boxes it and opens it out to the right;
+                    # clicking anything else puts it back
+                    cell.bind("<FocusIn>", lambda e, w=cell: self._ss_expand_cell(w))
+                    cell.bind("<FocusOut>", self._ss_collapse_cell)
                     # A name wider than the column is all still in there; the
                     # tooltip is so it can be read without selecting it first
                     _Tooltip(lambda w=cell, t=name:
@@ -3209,6 +3221,42 @@ class PhotosEditor:
             widget.selection_range(0, "end")
             widget.icursor("end")
         return "break"
+
+    def _ss_expand_cell(self, cell):
+        """A clicked name is boxed, and widened over the columns to its right
+        so that more of it shows.
+
+        The cell is read-only and the reports beside it are still in the log,
+        so covering them for as long as the click lasts costs nothing -- and it
+        is the only way to see a name that runs past the end of its column
+        without selecting it blind.
+        """
+        if self._ss_expanded is cell:
+            return
+        self._ss_collapse_cell()
+        info = cell.grid_info()
+        column = int(info.get("column", 1))
+        # Everything from this column to the last: in the last column there is
+        # nothing to the right to borrow, so it gets the box and no more
+        span = max(1, len(self._ss_columns) - column + 1)
+        self._ss_expanded = cell
+        self._ss_expanded_grid = {"column": column,
+                                  "columnspan": int(info.get("columnspan", 1)),
+                                  "sticky": info.get("sticky", "w")}
+        cell.config(relief="solid", bd=1)
+        cell.grid_configure(columnspan=span, sticky="we")
+        cell.lift()                     # over the cells it now covers
+
+    def _ss_collapse_cell(self, _event=None):
+        """Put the expanded cell back where it was."""
+        cell, self._ss_expanded = self._ss_expanded, None
+        if cell is None:
+            return
+        try:
+            cell.config(relief="flat", bd=0)
+            cell.grid_configure(**self._ss_expanded_grid)
+        except tk.TclError:
+            pass                        # the matrix was rebuilt under us
 
     @staticmethod
     def _ss_hidden_text(widget, text: str) -> str:
