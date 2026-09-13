@@ -2949,6 +2949,12 @@ class PhotosEditor:
         self._ss_header_canvas = header
         self._ss_header_frame  = header_frame
         self._ss_hscroll       = hscroll
+        # However the contents change size -- and they change a great deal when
+        # the face pictures replace their placeholders -- the scrollbars are
+        # told again
+        inner.bind("<Configure>", self._ss_sync_scrollregion, add="+")
+        header_frame.bind("<Configure>", self._ss_sync_scrollregion, add="+")
+        canvas.bind("<Configure>", self._ss_sync_scrollregion, add="+")
         # Clicking the empty part of the matrix is "somewhere else" too: those
         # take no focus, so the cell would otherwise stay open
         inner.bind("<Button-1>", self._ss_collapse_cell, add="+")
@@ -3104,22 +3110,40 @@ class PhotosEditor:
         grid.update_idletasks()
         top.update_idletasks()
         self._ss_align_columns(len(columns) + 1)
+        self._ss_sync_scrollregion()
+        self._ss_matrix_canvas.yview_moveto(0)
+        self._ss_matrix_canvas.xview_moveto(0)
+        self._ss_header_canvas.xview_moveto(0)
 
-        canvas = self._ss_matrix_canvas
-        header = self._ss_header_canvas
-        canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
-        header.configure(scrollregion=header.bbox("all") or (0, 0, 0, 0))
-        # The heading is exactly as tall as it needs to be: it does not scroll,
-        # so every pixel it takes is one the rows do not get
-        header.configure(height=max(top.winfo_reqheight(), 1))
-        canvas.yview_moveto(0)
-        canvas.xview_moveto(0)
-        header.xview_moveto(0)
-        # The sideways scrollbar earns its space only when there is overflow
-        if max(grid.winfo_reqwidth(), top.winfo_reqwidth()) > canvas.winfo_width():
-            self._ss_hscroll.grid()
-        else:
-            self._ss_hscroll.grid_remove()
+    def _ss_sync_scrollregion(self, _event=None):
+        """Tell the scrollbars how much there really is to scroll.
+
+        The matrix is built with "…" where the faces will be and measured
+        there and then, but the pictures arrive later and make every row far
+        taller.  A region set once is wrong by the time it matters: the rows
+        below the fold cannot be reached, the bar shows no thumb because it
+        believes everything fits, and a region shorter than the window lets it
+        scroll off into blank space.  So this is bound to <Configure> and
+        follows whatever the contents do.
+        """
+        canvas, header = self._ss_matrix_canvas, self._ss_header_canvas
+        if canvas is None or header is None:
+            return
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
+            # The heading does not scroll vertically, so it is made exactly as
+            # tall as it needs: every pixel it takes is one the rows do not get
+            header.configure(scrollregion=header.bbox("all") or (0, 0, 0, 0),
+                             height=max(self._ss_header_frame.winfo_reqheight(), 1))
+            # The sideways scrollbar earns its space only when there is overflow
+            widest = max(self._ss_matrix_frame.winfo_reqwidth(),
+                         self._ss_header_frame.winfo_reqwidth())
+            if widest > canvas.winfo_width():
+                self._ss_hscroll.grid()
+            else:
+                self._ss_hscroll.grid_remove()
+        except tk.TclError:
+            pass                        # the panel has gone with the mode
 
     def _ss_align_columns(self, count: int):
         """Give the heading and the rows the same column widths.
