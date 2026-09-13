@@ -3095,6 +3095,31 @@ class PhotosEditor:
         self._ss_hidden  = len(rows) - len(self._ss_rows)
         self._ss_columns = _ss_report_columns(group)
 
+    def _ss_set_count(self, group: list):
+        """The line above the matrix: which photo, and how its reports became
+        the columns beneath.
+
+        Reports and columns are not the same number, and when they differ the
+        reason has until now been left to be worked out: two reports saying
+        exactly the same thing share one column, and a report saying nothing at
+        all gets none while still having to be marked done.  Saying which
+        turns a puzzle into a fact.
+        """
+        reports = len(group)
+        columns = len(self._ss_columns)
+        text = (f"Photo {self._ss_group_index + 1} of {len(self._ss_groups)}"
+                f"   —   {reports} report{'s' if reports != 1 else ''}")
+        if columns < reports:
+            shown = sum(len(c["records"]) for c in self._ss_columns)
+            said = []
+            if shown > columns:                 # some column carries more than one
+                said.append("identical ones share a column")
+            if reports > shown:
+                said.append(f"{reports - shown} said nothing")
+            text += (f" in {columns} column{'s' if columns != 1 else ''}"
+                     + (f" — {', '.join(said)}" if said else ""))
+        self._ss_count_var.set(text)
+
     @property
     def _ss_group(self) -> list:
         """The records for the photo under review."""
@@ -3114,10 +3139,6 @@ class PhotosEditor:
         self.photo_label_var.set("Loading…")
 
         self._ss_album_var.set(str(rec.get("album") or ""))
-        n_reports = len(group)
-        self._ss_count_var.set(
-            f"Photo {self._ss_group_index + 1} of {len(self._ss_groups)}"
-            f"   —   {n_reports} report{'s' if n_reports != 1 else ''}")
         self._ss_prev_btn.config(
             state="normal" if self._ss_group_index > 0 else "disabled")
         self._ss_next_btn.config(
@@ -3126,6 +3147,7 @@ class PhotosEditor:
 
         self._ss_face_thumbs = {}       # another photo, so other faces
         self._ss_set_rows_and_columns(group)
+        self._ss_set_count(group)       # after the columns: it describes them
         self._ss_build_matrix(self._ss_rows, self._ss_columns)
 
         # Load the photo: the editor side by id, and the face thumbnails from it
@@ -3457,10 +3479,7 @@ class PhotosEditor:
         if group:                       # reports remain: redraw this photo
             self._ss_set_rows_and_columns(group)
             self._ss_build_matrix(self._ss_rows, self._ss_columns)
-            n = len(group)
-            self._ss_count_var.set(
-                f"Photo {self._ss_group_index + 1} of {len(self._ss_groups)}"
-                f"   —   {n} report{'s' if n != 1 else ''}")
+            self._ss_set_count(group)
             if completed is not None:
                 self.set_status(f'Log finished — renamed "{completed.name}".')
             return
