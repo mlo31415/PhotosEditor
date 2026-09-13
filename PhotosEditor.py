@@ -1364,6 +1364,8 @@ class PhotosEditor:
         self._ss_face_thumbs:  dict = {}    # face key -> its (plain, lit) pictures
         self._ss_expanded           = None  # the name cell opened out by a click
         self._ss_expanded_grid:dict = {}    # where it sat before it was opened
+        self._ss_header_canvas      = None  # the headings, frozen above the rows
+        self._ss_header_frame       = None
         self._ss_hover              = None  # the face row under the pointer, if any
         self._relaunch_on_exit      = False # a setting asked for a restart
         self._ss_load_gen:     int  = 0     # invalidates in-flight record loads
@@ -2905,31 +2907,52 @@ class PhotosEditor:
         self._ss_faces_bg_rgb = (r16 // 256, g16 // 256, b16 // 256)
 
         # The matrix scrolls both ways: down when a photo has more faces than
-        # fit, across when it has more reports than fit.
+        # fit, across when it has more reports than fit.  Who each column
+        # belongs to, and its ✕, are in a second canvas above the first, which
+        # scrolls sideways with it but never vertically -- a heading is no use
+        # once it has scrolled off the top of its own rows.
         holder = ttk.Frame(parent)
         holder.pack(fill="both", expand=True, pady=(8, 0))
-        canvas  = tk.Canvas(holder, highlightthickness=0, bg=bg)
+        header = tk.Canvas(holder, highlightthickness=0, bg=bg)
+        canvas = tk.Canvas(holder, highlightthickness=0, bg=bg)
         vscroll = ttk.Scrollbar(holder, orient="vertical", command=canvas.yview)
-        hscroll = ttk.Scrollbar(holder, orient="horizontal", command=canvas.xview)
+
+        def scroll_both(*args):
+            canvas.xview(*args)
+            header.xview(*args)
+
+        hscroll = ttk.Scrollbar(holder, orient="horizontal", command=scroll_both)
         canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-        vscroll.grid(row=0, column=1, sticky="ns")
-        hscroll.grid(row=1, column=0, sticky="ew")
-        canvas.grid(row=0, column=0, sticky="nsew")
-        holder.rowconfigure(0, weight=1)
+        header.grid(row=0, column=0, sticky="ew")
+        canvas.grid(row=1, column=0, sticky="nsew")
+        vscroll.grid(row=1, column=1, sticky="ns")
+        hscroll.grid(row=2, column=0, sticky="ew")
+        holder.rowconfigure(1, weight=1)
         holder.columnconfigure(0, weight=1)
+        header_frame = tk.Frame(header, bg=bg)
+        header.create_window((0, 0), window=header_frame, anchor="nw")
         inner = tk.Frame(canvas, bg=bg)
         canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.bind("<Enter>", lambda e: canvas.bind_all(
-            "<MouseWheel>", lambda ev: canvas.yview_scroll(
-                -1 if ev.delta > 0 else 1, "units")))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        def wheel(event):
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        # Over the heading as well, so the rows still move when the pointer
+        # happens to be resting on it
+        for widget in (canvas, header):
+            widget.bind("<Enter>",
+                        lambda e, w=widget: w.bind_all("<MouseWheel>", wheel))
+            widget.bind("<Leave>", lambda e, w=widget: w.unbind_all("<MouseWheel>"))
+            widget.bind("<Button-1>", self._ss_collapse_cell, add="+")
         self._ss_matrix_canvas = canvas
         self._ss_matrix_frame  = inner
+        self._ss_header_canvas = header
+        self._ss_header_frame  = header_frame
         self._ss_hscroll       = hscroll
         # Clicking the empty part of the matrix is "somewhere else" too: those
         # take no focus, so the cell would otherwise stay open
-        canvas.bind("<Button-1>", self._ss_collapse_cell, add="+")
         inner.bind("<Button-1>", self._ss_collapse_cell, add="+")
+        header_frame.bind("<Button-1>", self._ss_collapse_cell, add="+")
 
         nav = ttk.Frame(parent)
         nav.pack(pady=10)
@@ -2950,19 +2973,21 @@ class PhotosEditor:
     def _ss_build_matrix(self, rows: list, columns: list):
         """Lay out the current photo's faces against its reports."""
         bg = self._ss_faces_bg
-        for w in self._ss_matrix_frame.winfo_children():
-            w.destroy()
+        for frame in (self._ss_matrix_frame, self._ss_header_frame):
+            for w in frame.winfo_children():
+                w.destroy()
         self._ss_face_labels = []       # one per face row, filled in by the worker
         self._ss_expanded    = None     # the cells are about to be destroyed
         self._ss_row_cells   = []       # the widgets of each row, for the hover tint
         self._ss_cell_vars   = []       # the name cells' variables, kept alive
         self._ss_hover       = None     # the row rebuilt out from under any hover
 
-        grid = self._ss_matrix_frame
-        HEAD, COMMENT, FIRST = 0, 1, 2  # row numbers of the two header rows
+        grid = self._ss_matrix_frame            # the rows, which scroll
+        top  = self._ss_header_frame            # the headings, which do not
+        HEAD, COMMENT, FIRST = 0, 1, 0  # two rows in the heading, then the faces
 
         for c, col in enumerate(columns, start=1):
-            head = tk.Frame(grid, bg=bg)
+            head = tk.Frame(top, bg=bg)
             # Left-aligned, so the ✕ sits beside the heading instead of being
             # pushed out to the far edge of the column
             head.grid(row=HEAD, column=c, sticky="w", padx=(10, 0))
@@ -2992,7 +3017,7 @@ class PhotosEditor:
                 lines = 1 + len(comment) // self._SS_COL_WIDTH
                 size  = 9 if lines <= self._SS_COMMENT_MAX else (
                         8 if lines <= self._SS_COMMENT_MAX * 2 else 7)
-                box = tk.Text(grid, bg=bg, fg=_SS_USER_TEXT_FG,
+                box = tk.Text(top, bg=bg, fg=_SS_USER_TEXT_FG,
                               font=("TkDefaultFont", size), wrap="word",
                               width=self._SS_COL_WIDTH, height=min(lines, 12),
                               relief="flat", bd=0, highlightthickness=0,
@@ -3004,7 +3029,7 @@ class PhotosEditor:
                 box.grid(row=COMMENT, column=c, sticky="new", padx=(10, 0))
 
         if not columns:
-            tk.Label(grid, text="(no identifications in these reports)",
+            tk.Label(top, text="(no identifications in these reports)",
                      bg=bg, fg="gray").grid(row=HEAD, column=1, padx=(10, 0),
                                             sticky="w")
 
@@ -3077,15 +3102,45 @@ class PhotosEditor:
                               sticky="w", pady=(6, 2))
 
         grid.update_idletasks()
+        top.update_idletasks()
+        self._ss_align_columns(len(columns) + 1)
+
         canvas = self._ss_matrix_canvas
+        header = self._ss_header_canvas
         canvas.configure(scrollregion=canvas.bbox("all") or (0, 0, 0, 0))
+        header.configure(scrollregion=header.bbox("all") or (0, 0, 0, 0))
+        # The heading is exactly as tall as it needs to be: it does not scroll,
+        # so every pixel it takes is one the rows do not get
+        header.configure(height=max(top.winfo_reqheight(), 1))
         canvas.yview_moveto(0)
         canvas.xview_moveto(0)
+        header.xview_moveto(0)
         # The sideways scrollbar earns its space only when there is overflow
-        if grid.winfo_reqwidth() > canvas.winfo_width():
+        if max(grid.winfo_reqwidth(), top.winfo_reqwidth()) > canvas.winfo_width():
             self._ss_hscroll.grid()
         else:
             self._ss_hscroll.grid_remove()
+
+    def _ss_align_columns(self, count: int):
+        """Give the heading and the rows the same column widths.
+
+        They are two grids in two canvases, so nothing makes their columns
+        agree by itself: each would size to its own contents and the ✕ would
+        drift away from the names it belongs to.  Widening both to whichever
+        is wider settles it.
+        """
+        top, grid = self._ss_header_frame, self._ss_matrix_frame
+        for column in range(count):
+            widths = []
+            for frame in (top, grid):
+                if frame.grid_size()[0] > column:
+                    box = frame.grid_bbox(column=column, row=0)
+                    if box:
+                        widths.append(box[2])
+            if widths:
+                widest = max(widths)
+                top.grid_columnconfigure(column, minsize=widest)
+                grid.grid_columnconfigure(column, minsize=widest)
 
     def _ss_set_rows_and_columns(self, group: list):
         """What the matrix is about to show, and how many faces it is leaving
