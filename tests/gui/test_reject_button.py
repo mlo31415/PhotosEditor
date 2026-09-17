@@ -103,7 +103,7 @@ def run():
     app._show_mode(pe.MODE_REVIEW); root.update()
     first = app._ss_group[0]["photo id"]
     print(f"reviewing {len(app._ss_groups)} photos, this one is {first}")
-    check("the button says Reject Reports", "Reject Reports" in labels(),
+    check("the button says Reject", "Reject" in labels(),
           [t for t in labels() if "photo" in t.lower() or "Reject" in t])
     check("nothing still says Skip", not any("Skip" in t for t in labels()))
 

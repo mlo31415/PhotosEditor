@@ -112,7 +112,7 @@ def deleted():
     check("the canvas says so too", "no longer on Piwigo" in shown)
     check("and says it was deleted", "deleted since" in shown)
     check("and that the reports are still good", "still readable" in shown)
-    check("it names the button that clears them", "Reject Reports" in shown, shown)
+    check("it names the button that clears them", "Use Reject to clear" in shown, shown)
     check("the wait cursor came off", root.cget("cursor") == "", root.cget("cursor"))
 
     print("\nthe reports are there regardless:")

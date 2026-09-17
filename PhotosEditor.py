@@ -3173,7 +3173,7 @@ class PhotosEditor:
                                        command=lambda: self._ss_step(-1))
         self._ss_next_btn = ttk.Button(nav, text="Next photo ▶",
                                        command=lambda: self._ss_step(+1))
-        self._ss_reject_btn = ttk.Button(nav, text="Reject Reports",
+        self._ss_reject_btn = ttk.Button(nav, text="Reject",
                                          command=self._ss_reject_reports)
         self._ss_prev_btn.pack(side="left", padx=4)
         self._ss_next_btn.pack(side="left", padx=4)
@@ -3450,7 +3450,7 @@ class PhotosEditor:
                          daemon=True).start()
 
     _SS_STILL_READABLE = ("The reports beside it are still readable.  Use "
-                          "Reject Reports to clear them and move on.")
+                          "Reject to clear them and move on.")
 
     def _ss_photo_unavailable(self, heading: str, why: str, advice: str = ""):
         """Say on the photo side that there is no photo to show, and why.
@@ -3796,7 +3796,7 @@ class PhotosEditor:
         self._ss_after_marking(completed)
 
     def _ss_reject_reports(self):
-        """Reject Reports: nothing here is wanted.  Every report on this photo
+        """Reject: nothing here is wanted.  Every report on this photo
         is marked done -- in the log, so it is not offered again on a later run
         either -- and the next photo comes up."""
         if not self._ss_confirm_discard():
