@@ -3049,11 +3049,11 @@ class PhotosEditor:
                                        command=lambda: self._ss_step(-1))
         self._ss_next_btn = ttk.Button(nav, text="Next photo ▶",
                                        command=lambda: self._ss_step(+1))
-        self._ss_skip_btn = ttk.Button(nav, text="Skip photo",
-                                       command=self._ss_skip_photo)
+        self._ss_reject_btn = ttk.Button(nav, text="Reject Reports",
+                                         command=self._ss_reject_reports)
         self._ss_prev_btn.pack(side="left", padx=4)
         self._ss_next_btn.pack(side="left", padx=4)
-        self._ss_skip_btn.pack(side="left", padx=(16, 4))
+        self._ss_reject_btn.pack(side="left", padx=(16, 4))
 
     # ── The face-row / report-column matrix ──────────────────────────────────
     _SS_COL_WIDTH   = 22        # characters; a name is rarely longer
@@ -3345,8 +3345,8 @@ class PhotosEditor:
                 font=("TkDefaultFont", 11),
                 width=max(width - 40, 100),
                 text=f"{heading}\n\n{why}\n\n"
-                     "The reports beside it are still readable.  Use Skip to "
-                     "clear them and move on.")
+                     "The reports beside it are still readable.  Use Reject "
+                     "Reports to clear them and move on.")
         except tk.TclError:
             pass                        # the canvas has gone with the mode
 
@@ -3669,13 +3669,14 @@ class PhotosEditor:
         _, completed = self._ss_mark_records_done(column.get("records") or [])
         self._ss_after_marking(completed)
 
-    def _ss_skip_photo(self):
-        """Skip: nothing here is wanted.  Every report on this photo is marked
-        done and the next photo comes up."""
+    def _ss_reject_reports(self):
+        """Reject Reports: nothing here is wanted.  Every report on this photo
+        is marked done -- in the log, so it is not offered again on a later run
+        either -- and the next photo comes up."""
         if not self._ss_confirm_discard():
             return
-        # Skipping means the typing was not wanted: forget it, so it cannot come
-        # back if this photo turns up again
+        # Rejecting means the typing was not wanted: forget it, so it cannot
+        # come back if this photo turns up again
         self.custom_data.pop((self._current_image_dict or {}).get("id"), None)
         _, completed = self._ss_mark_records_done(list(self._ss_group))
         self._clear_editor()
