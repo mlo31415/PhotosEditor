@@ -1030,6 +1030,26 @@ _EDITOR_SEARCH = (
 )
 # Executables whose own name says nothing about the program
 _EDITOR_NAMES = {"i_view64": "IrfanView", "i_view32": "IrfanView"}
+# Builds to leave out of the list unless they are the only one installed
+_EDITOR_SIDELINE = ("beta", "preview", "prerelease", "(test)")
+
+
+def _pick_installed(pattern: str) -> str:
+    """The one program a search pattern should contribute, or "".
+
+    One, not all: Adobe leaves every year it has installed in place, and
+    three entries called Photoshop are three ways to pick the wrong one.  The
+    newest wins -- the names sort that way -- and a beta is passed over unless
+    it is all there is, because an archive is not the place to find out what
+    this year's beta does to a photograph.
+    """
+    matches = sorted((p for p in glob.glob(pattern) if os.path.isfile(p)),
+                     reverse=True)
+    if not matches:
+        return ""
+    released = [p for p in matches
+                if not any(word in p.lower() for word in _EDITOR_SIDELINE)]
+    return (released or matches)[0]
 
 
 def _discover_external_editors() -> list:
@@ -1040,14 +1060,10 @@ def _discover_external_editors() -> list:
     """
     found = []
     for pattern in _EDITOR_SEARCH:
-        if "*" in pattern:
-            # Newest first, so "Adobe Photoshop 2026" beats "2024"
-            matches = sorted(glob.glob(pattern), reverse=True)
-        else:
-            matches = [pattern] if os.path.isfile(pattern) else []
-        for path in matches:
-            if os.path.isfile(path) and path not in found:
-                found.append(path)
+        path = (_pick_installed(pattern) if "*" in pattern
+                else (pattern if os.path.isfile(pattern) else ""))
+        if path and path not in found:
+            found.append(path)
     return found
 
 

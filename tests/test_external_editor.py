@@ -139,13 +139,27 @@ class FindingTheTools(unittest.TestCase):
         pe._EDITOR_SEARCH = (here, str(self.tmp / "nothing/at/all.exe"))
         self.assertEqual(pe._discover_external_editors(), [here])
 
-    def test_a_pattern_finds_the_newest_first(self):
-        """Photoshop puts its year in the folder name, and the current one is
-        the one to offer."""
+    def test_only_the_newest_of_several_versions_is_offered(self):
+        """Adobe leaves every year it has installed in place, and three
+        entries called Photoshop are three ways to pick the wrong one."""
         self.make("Adobe/Adobe Photoshop 2024/Photoshop.exe")
+        self.make("Adobe/Adobe Photoshop 2025/Photoshop.exe")
         newest = self.make("Adobe/Adobe Photoshop 2026/Photoshop.exe")
         pe._EDITOR_SEARCH = (str(self.tmp / "Adobe/Adobe Photoshop*/Photoshop.exe"),)
-        self.assertEqual(pe._discover_external_editors()[0], newest)
+        self.assertEqual(pe._discover_external_editors(), [newest])
+
+    def test_a_beta_is_passed_over(self):
+        """An archive is not the place to find out what this year's beta does
+        to a photograph."""
+        self.make("Adobe/Adobe Photoshop (Beta)/Photoshop.exe")
+        released = self.make("Adobe/Adobe Photoshop 2026/Photoshop.exe")
+        pe._EDITOR_SEARCH = (str(self.tmp / "Adobe/Adobe Photoshop*/Photoshop.exe"),)
+        self.assertEqual(pe._discover_external_editors(), [released])
+
+    def test_unless_the_beta_is_all_there_is(self):
+        beta = self.make("Adobe/Adobe Photoshop (Beta)/Photoshop.exe")
+        pe._EDITOR_SEARCH = (str(self.tmp / "Adobe/Adobe Photoshop*/Photoshop.exe"),)
+        self.assertEqual(pe._discover_external_editors(), [beta])
 
     def test_nothing_installed_is_an_empty_list_not_a_failure(self):
         pe._EDITOR_SEARCH = (str(self.tmp / "no/such.exe"),)
