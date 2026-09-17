@@ -13,6 +13,7 @@ Shares AlbumHierarchy.py in ../PiwigoHelpers with ../PhotosUploader.
 import os
 import re
 import sys
+import glob
 import json
 import shutil
 import subprocess
@@ -20,7 +21,6 @@ import tempfile
 import threading
 import logging
 import warnings
-import atexit
 import time
 import hashlib
 import xml.etree.ElementTree as ET
@@ -1015,6 +1015,75 @@ def _looks_like_temp_upload_name(name: str) -> bool:
 
 PHOTO_BACKUP_DIR = "Photo Backups"
 
+# The tools offered for "Use external image editor", and the one used last.
+EXTERNAL_EDITORS_KEY = "external_editors"
+EXTERNAL_EDITOR_LAST = "external_editor_last"
+
+# Where to look the first time, so the list is not empty on a machine that
+# already has something to edit with.  A pattern rather than a path because
+# Photoshop puts its year in the folder name.
+_EDITOR_SEARCH = (
+    r"C:\Program Files\IrfanView\i_view64.exe",
+    r"C:\Program Files (x86)\IrfanView\i_view64.exe",
+    r"C:\Program Files\Adobe\Adobe Photoshop*\Photoshop.exe",
+    r"C:\Program Files (x86)\Adobe\Adobe Photoshop*\Photoshop.exe",
+)
+# Executables whose own name says nothing about the program
+_EDITOR_NAMES = {"i_view64": "IrfanView", "i_view32": "IrfanView"}
+
+
+def _discover_external_editors() -> list:
+    """Editors that are on this machine, for seeding an empty list.
+
+    Only the two worth assuming: anything else the user adds themselves,
+    which is the point of the Find-another-tool button.
+    """
+    found = []
+    for pattern in _EDITOR_SEARCH:
+        if "*" in pattern:
+            # Newest first, so "Adobe Photoshop 2026" beats "2024"
+            matches = sorted(glob.glob(pattern), reverse=True)
+        else:
+            matches = [pattern] if os.path.isfile(pattern) else []
+        for path in matches:
+            if os.path.isfile(path) and path not in found:
+                found.append(path)
+    return found
+
+
+def _editor_label(path: str) -> str:
+    """What to call a tool in the list: its own name, unless that is a name
+    only its installer could love."""
+    stem = Path(path).stem
+    return _EDITOR_NAMES.get(stem.lower(), stem)
+
+
+def _file_fingerprint(path: "Path") -> tuple:
+    """Enough to tell whether a file has been written since it was last
+    looked at.  Size as well as time, because an editor that saves twice
+    within a clock tick still changes the size."""
+    try:
+        stat = path.stat()
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (0, 0)
+
+
+def _export_for_external_edit(img: "Image.Image", folder: "Path",
+                              filename: str) -> "Path":
+    """Write the photo out for another program to work on.
+
+    PNG, not JPEG: this is a round trip, and JPEG would cost a generation of
+    quality on the way out and another on the way back.  The EXIF that PNG
+    cannot carry is kept separately by the editor and goes to Piwigo from
+    there, so nothing is lost by it.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (Path(_sanitize_filename(filename)).stem + ".png")
+    out = img if img.mode in ("RGB", "RGBA", "L") else img.convert("RGB")
+    out.save(path, format="PNG")
+    return path
+
 
 def _backup_path(folder: Path, filename: str) -> Path:
     """Where to put the pre-change copy of a photo called filename.
@@ -1737,6 +1806,7 @@ class PhotosEditor:
                                 height=200)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>",        self._on_canvas_resize)
+        self.canvas.bind("<Button-3>",         self._on_photo_context_menu)
         self.canvas.bind("<Control-Button-1>", self._open_caption_editor)
         self.canvas.bind("<Double-Button-1>",  self._open_caption_editor)
         self.canvas.bind("<Button-1>",         self._on_crop_start)
@@ -5025,39 +5095,294 @@ class PhotosEditor:
         self._loaded_fields = self._editor_field_values()
         self.set_status(f"Loaded: {name}")
 
-    _IRFANVIEW_PATHS = [
-        r"C:\Program Files\IrfanView\i_view64.exe",
-        r"C:\Program Files (x86)\IrfanView\i_view64.exe",
-    ]
-
-    def _open_in_irfanview(self):
+    # ── Editing the photo in another program ────────────────────────────────
+    def _on_photo_context_menu(self, event):
+        """Right button on the photo."""
         if self._viewer_image is None:
             return
-        exe = next((p for p in self._IRFANVIEW_PATHS if os.path.isfile(p)), None)
-        if exe is None:
-            exe = shutil.which("i_view64.exe")
-        img = self._viewer_image
-        suffix = ".jpg" if img.mode in ("RGB", "L") else ".png"
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-        tmp.close()
-        tmp_name = tmp.name
-        try:
-            img.save(tmp_name)
-        except Exception as e:
-            os.unlink(tmp_name)
-            self.set_status(f"Could not save temp image: {e}")
+        menu = tk.Menu(self.canvas, tearoff=0)
+        menu.add_command(label="Use external image editor…",
+                         command=self._choose_external_editor)
+        last = self._last_external_editor()
+        if last:
+            menu.add_command(label=f"Edit in {_editor_label(last)}  (Ctrl+I)",
+                             command=lambda p=last: self._run_external_edit(p))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _external_editors(self) -> list:
+        """The tools on offer.  Seeded once from whatever is installed, so the
+        first use is not an empty list."""
+        params = _store.load_op_params()
+        if EXTERNAL_EDITORS_KEY in params:
+            return [str(p) for p in params.get(EXTERNAL_EDITORS_KEY) or []]
+        found = _discover_external_editors()
+        if found:
+            _store.set_op_param(EXTERNAL_EDITORS_KEY, found)
+        return found
+
+    def _save_external_editors(self, tools: list):
+        _store.set_op_param(EXTERNAL_EDITORS_KEY, list(tools))
+
+    def _last_external_editor(self) -> str:
+        """The tool used last, if it is still both listed and installed."""
+        last = str(_store.load_op_params().get(EXTERNAL_EDITOR_LAST, "") or "")
+        return last if last and os.path.isfile(last) else ""
+
+    def _open_in_irfanview(self):
+        """Ctrl+I: straight to the tool used last, or the list if there is
+        not one yet."""
+        if self._viewer_image is None:
+            self.set_status("No photo to edit.")
             return
-        atexit.register(lambda p=tmp_name: os.path.exists(p) and os.unlink(p))
-        if exe is None:
-            try:
-                os.startfile(tmp_name)
-            except Exception as e:
-                self.set_status(f"Could not open image: {e}")
+        last = self._last_external_editor()
+        if last:
+            self._run_external_edit(last)
+        else:
+            self._choose_external_editor()
+
+    def _choose_external_editor(self):
+        """The list of tools, and the ways to change it.
+
+        The list is managed here rather than in the Settings window: every
+        setting there is one value on one line, and this is neither.
+        """
+        if self._viewer_image is None:
+            self.set_status("No photo to edit.")
             return
+        tools = self._external_editors()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("External Image Editor")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        body = ttk.Frame(dlg, padding=(14, 12, 14, 8))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f'Edit "{self._photo_label()}" in:').pack(anchor="w")
+
+        listbox = tk.Listbox(body, height=6, width=52, exportselection=False)
+        listbox.pack(fill="both", expand=True, pady=(6, 2))
+        ttk.Label(body, foreground="gray", font=("TkDefaultFont", 8),
+                  wraplength=380, justify="left",
+                  text="The photo goes out at full size, with any editing done "
+                       "here already applied.  Save it in the other program and "
+                       "the changes come back.").pack(anchor="w", pady=(0, 6))
+
+        def refill(select=0):
+            listbox.delete(0, "end")
+            for path in tools:
+                gone = "" if os.path.isfile(path) else "   (not found)"
+                listbox.insert("end", f"{_editor_label(path)}{gone}      {path}")
+            if tools:
+                listbox.selection_set(min(select, len(tools) - 1))
+
+        def chosen() -> str:
+            picked = listbox.curselection()
+            return tools[picked[0]] if picked else ""
+
+        def open_it(_event=None):
+            path = chosen()
+            if not path:
+                return
+            dlg.destroy()
+            self._run_external_edit(path)
+
+        def find_one():
+            path = filedialog.askopenfilename(
+                parent=dlg, title="Find an image editor",
+                filetypes=[("Programs", "*.exe"), ("All files", "*.*")])
+            if not path:
+                return
+            path = str(Path(path).resolve())
+            if path not in tools:
+                tools.append(path)
+                self._save_external_editors(tools)
+            refill(tools.index(path))
+            open_it()
+
+        def remove_one():
+            path = chosen()
+            if not path:
+                return
+            where = tools.index(path)
+            tools.remove(path)
+            self._save_external_editors(tools)
+            refill(max(where - 1, 0))
+
+        listbox.bind("<Double-Button-1>", open_it)
+        buttons = ttk.Frame(dlg, padding=(14, 0, 14, 12))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(side="right")
+        ttk.Button(buttons, text="Open", command=open_it).pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="Remove", command=remove_one).pack(side="left")
+        ttk.Button(buttons, text="Find another tool…",
+                   command=find_one).pack(side="left", padx=(8, 0))
+        refill(max(tools.index(self._last_external_editor()), 0)
+               if self._last_external_editor() in tools else 0)
+        dlg.update_idletasks()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        dlg.geometry(f"+{rx + (rw - dlg.winfo_reqwidth())//2}"
+                     f"+{max(ry + (rh - dlg.winfo_reqheight())//2, 0)}")
+
+    def _run_external_edit(self, exe: str):
+        """Hand the photo to another program and wait for it to come back.
+
+        PhotosEditor is held on a modal dialog for the duration.  That is what
+        makes "saved" and "closed without saving" mean anything: without it,
+        moving to another photo mid-edit has no good answer.  Work already in
+        flight to Piwigo carries on -- the dialog stops new actions, not the
+        program.
+        """
+        if self._viewer_image is None:
+            return
+        if not os.path.isfile(exe):
+            messagebox.showerror(
+                "Editor Not Found",
+                f"{_editor_label(exe)} is no longer at\n{exe}\n\n"
+                "Use Remove in the list to take it out.", parent=self.root)
+            return
+
+        folder = Path(tempfile.mkdtemp(prefix="PE-edit-"))
         try:
-            subprocess.Popen([exe, tmp_name, '/fs'])
+            handed_over = _export_for_external_edit(
+                self._viewer_image, folder,
+                _real_photo_filename(self._current_image_dict or {}, None))
         except Exception as e:
-            self.set_status(f"Could not open IrfanView: {e}")
+            shutil.rmtree(folder, ignore_errors=True)
+            messagebox.showerror("Could Not Export",
+                                 f"The photo could not be written out:\n\n{e}",
+                                 parent=self.root)
+            return
+
+        before = _file_fingerprint(handed_over)
+        try:
+            process = subprocess.Popen([exe, str(handed_over)])
+        except Exception as e:
+            shutil.rmtree(folder, ignore_errors=True)
+            messagebox.showerror("Could Not Start",
+                                 f"{_editor_label(exe)} would not start:\n\n{e}",
+                                 parent=self.root)
+            return
+        _store.set_op_param(EXTERNAL_EDITOR_LAST, exe)
+
+        try:
+            if self._wait_for_external_edit(exe, handed_over, before, process):
+                self._apply_external_edit(handed_over, exe)
+        finally:
+            # Nothing is kept: the copy that matters is the one Photo Backups
+            # takes when the edit is uploaded.
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def _wait_for_external_edit(self, exe: str, path: "Path", before: tuple,
+                                process) -> bool:
+        """Hold PhotosEditor while the other program has the photo.
+
+        True if the changes are to be brought back.
+
+        The process ending is not by itself the end of the editing: a good many
+        Windows editors hand the file to a copy of themselves that is already
+        running and exit at once, which would otherwise look like "closed
+        without saving" a second after opening.  So the button is what settles
+        it, and an exit only settles it when the file was saved as well.
+        """
+        name = _editor_label(exe)
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Editing in {name}")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)   # the buttons, or nothing
+
+        body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f'"{self._photo_label()}" is open in {name}.',
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        state_var = tk.StringVar(value="Nothing saved yet.")
+        ttk.Label(body, textvariable=state_var, foreground="gray").pack(
+            anchor="w", pady=(6, 0))
+        ttk.Label(body, wraplength=420, justify="left", foreground="#555555",
+                  font=("TkDefaultFont", 8),
+                  text="Save in the other program and press Done, and the photo "
+                       "here is replaced by what you saved.  Saving under a "
+                       "different name is not seen -- it is this file that comes "
+                       "back.").pack(anchor="w", pady=(8, 0))
+
+        answer = {"bring_back": False}
+
+        def saved_now() -> bool:
+            return _file_fingerprint(path) != before
+
+        def done():
+            answer["bring_back"] = saved_now()
+            if not answer["bring_back"]:
+                self.set_status(f"{name} saved nothing — the photo is unchanged.")
+            dlg.destroy()
+
+        def cancel():
+            if saved_now() and not messagebox.askyesno(
+                    "Discard the External Edit?",
+                    f"{name} saved changes to this photo.\n\n"
+                    "Cancelling throws them away and leaves the photo here as "
+                    "it was.\n\nDiscard them?", icon="warning", parent=dlg):
+                return
+            answer["bring_back"] = False
+            self.set_status("External edit cancelled — the photo is unchanged.")
+            dlg.destroy()
+
+        buttons = ttk.Frame(dlg, padding=(16, 4, 16, 14))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="right")
+        done_btn = ttk.Button(buttons, text="Done", command=done)
+        done_btn.pack(side="right", padx=(0, 8))
+        done_btn.focus_set()
+
+        def watch():
+            if not dlg.winfo_exists():
+                return
+            if saved_now():
+                state_var.set("Saved — press Done to bring the changes back.")
+                if process.poll() is not None:
+                    done()                  # saved, and the editor has closed
+                    return
+            elif process.poll() is not None:
+                state_var.set(f"{name} is no longer running, and nothing has "
+                              "been saved.")
+            dlg.after(500, watch)
+
+        dlg.update_idletasks()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        dlg.geometry(f"+{rx + (rw - dlg.winfo_reqwidth())//2}"
+                     f"+{max(ry + (rh - dlg.winfo_reqheight())//2, 0)}")
+        watch()
+        dlg.wait_window()
+        return answer["bring_back"]
+
+    def _apply_external_edit(self, path: "Path", exe: str):
+        """Put what came back on the easel, as an edit like any other."""
+        try:
+            with Image.open(path) as returned:
+                returned.load()
+                edited = returned.convert("RGB")
+        except Exception as e:
+            messagebox.showerror(
+                "Could Not Read It Back",
+                f"What {_editor_label(exe)} saved could not be opened:\n\n{e}\n\n"
+                "The photo here is unchanged.", parent=self.root)
+            return
+        was = self._viewer_image
+        self._edit_history.append(was.copy())
+        self.undo_btn.config(state="normal")
+        self._viewer_image = edited
+        self._photo_edited = True
+        self.photo_dim_var.set(f"{edited.width} × {edited.height} px"
+                               f"  |  {edited.mode}")
+        self._set_restoration_base()
+        self._clear_crop_rect()
+        self._display_photo()
+        resized = ("" if (edited.width, edited.height) == (was.width, was.height)
+                   else f" — now {edited.width} × {edited.height}")
+        self.set_status(f"Edited in {_editor_label(exe)}{resized}.  "
+                        "Upload to put it on Piwigo.")
 
     @staticmethod
     def _fit_within_pixels(w: int, h: int, max_pixels: int) -> tuple:
