@@ -1445,6 +1445,7 @@ class PhotosEditor:
         self._field_links:   list = []
         self.persist_vars:   dict = {}
         self._exif_data:     dict = {}   # kept for field-link machinery
+        self._orig_exif:     bytes = b"" # the photo's own EXIF, as downloaded
         self._field_validity = {'date': False, 'caption': False}
 
         # ── tk variables ────────────────────────────────────────────────────
@@ -1830,7 +1831,9 @@ class PhotosEditor:
         _restore_sliders = [
             ("Exposure",  self._restore_exposure_var, -100, 100),
             ("Contrast",  self._restore_contrast_var, -100, 100),
-            ("Red cast",  self._restore_red_var,         0, 100),
+            # Both ways: right takes red out of an orange scan, left puts it
+            # back into one that came out cold.
+            ("Red cast",  self._restore_red_var,      -100, 100),
             ("Sharpen",   self._restore_sharpen_var,     0, 100),
         ]
         self._restore_val_vars = {}
@@ -1853,6 +1856,13 @@ class PhotosEditor:
         if not PhotoRestoration.CV2_AVAILABLE:
             ttk.Label(btns_col, text="(requires\nopencv-python)",
                       foreground="red", justify="center").pack(pady=(0, 4))
+        self._auto_colour_btn = ttk.Button(btns_col, text="Auto\nColour",
+                                           command=self._auto_colour)
+        self._auto_colour_btn.pack(pady=(0, 4))
+        _Tooltip(lambda: "Set Red cast from the photo itself, by measuring how "
+                         "far its\nreds and blues have drifted apart.  The "
+                         "other sliders are left alone."
+                 ).attach(self._auto_colour_btn)
         ttk.Button(btns_col, text="Revert\nRestoration",
                    command=self._reset_restoration).pack()
 
@@ -4935,6 +4945,10 @@ class PhotosEditor:
         self._photo_load_finished(img_dict)
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
+        # Kept now, because it is gone by the time it is needed: rotating,
+        # cropping and restoring all return a new image, and none of them
+        # carries the EXIF block along.
+        self._orig_exif          = pil.info.get("exif", b"")
         self._current_image_dict = img_dict
         self._photo_edited       = False
         self._edit_history.clear()
@@ -5156,6 +5170,7 @@ class PhotosEditor:
                 if choice == 'cancel':
                     self.set_status("Upload cancelled.")
                     return
+        exif_out = self._exif_to_write()
 
         # Progress dialog
         set_stage, _advance, close_dlg = self._make_progress_dialog(
@@ -5238,7 +5253,10 @@ class PhotosEditor:
                 # against going higher, and the gain past it is slight against
                 # a steep size rise).  subsampling=0 keeps full colour
                 # resolution -- PIL would otherwise halve chroma at any quality.
-                img.save(temp_path, format='JPEG', quality=95, subsampling=0)
+                save_kw = dict(format='JPEG', quality=95, subsampling=0)
+                if exif_out:
+                    save_kw['exif'] = exif_out
+                img.save(temp_path, **save_kw)
 
                 client = AlbumHierarchy.PiwigoClient(
                     creds['url'], creds['username'], creds['password'],
@@ -5502,6 +5520,50 @@ class PhotosEditor:
         self._viewer_image = result
         self._photo_edited = True
         self._display_photo()
+
+    def _exif_to_write(self) -> bytes:
+        """The photo's own EXIF, ready to go into the edited file.
+
+        Re-encoding a JPEG loses whatever the original carried -- the camera,
+        the lens, the date it was taken -- unless it is handed back explicitly,
+        and PhotosEditor was not handing it back.  A scan's date and the
+        photographer's name are exactly what this archive is for.
+
+        Orientation is the one tag that must not survive: the pixels are
+        written the way they are on screen, rotation and all, so a viewer that
+        turned them again by the old tag would have them sideways.
+        """
+        if not self._orig_exif:
+            return b""
+        try:
+            exif = Image.Exif()
+            exif.load(self._orig_exif)
+            exif.pop(0x0112, None)              # Orientation
+            return exif.tobytes()
+        except Exception as e:
+            # Better the original block, orientation and all, than none of it
+            logger.warning(f"Could not rewrite EXIF, keeping it as it was: {e}")
+            return self._orig_exif
+
+    def _auto_colour(self):
+        """Set Red cast from the photo, instead of judging it by eye.
+
+        Only that one slider: a colour cast is something that can be measured,
+        where exposure, contrast and sharpening are judgements about what the
+        photo should look like.  The answer lands on the slider, so it can be
+        seen, argued with and dragged somewhere else.
+        """
+        if self._restoration_base is None:
+            self.set_status("No photo to measure.")
+            return
+        value = round(PhotoRestoration.grey_world_red_cast(self._restoration_base))
+        self._restore_red_var.set(value)
+        self._restore_val_vars["Red cast"].set(str(value))
+        self._on_restoration_change()
+        self.set_status(
+            "Auto colour: no cast to correct." if value == 0 else
+            f"Auto colour: red cast set to {value:+d} "
+            f"({'cooler' if value > 0 else 'warmer'}).")
 
     def _reset_restoration(self):
         """Reset all restoration sliders and restore the base image."""
@@ -6329,6 +6391,7 @@ class PhotosEditor:
         self._loaded_fields      = {}
         self._loaded_full_size   = True
         self._exif_data          = {}
+        self._orig_exif          = b""   # not this photo's, once it has gone
         self.photo_label_var.set("No photo selected")
         self.photo_dim_var.set("")
         self.url_var.set("")
