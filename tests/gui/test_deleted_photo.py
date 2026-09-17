@@ -76,15 +76,7 @@ root = tk.Tk(); root.geometry("1500x900")
 app = pe.PhotosEditor(root)
 pe._store.set_op_param(pe.SS_REVIEW_DIR_KEY, str(tmp))
 app._ss_source = str(tmp)        # as _enter_ss_review would have
-app._ss_groups = pe._ss_group_by_photo(pe._collect_ss_records(tmp))
-app._ss_group_index = 0
-app._main_pane.pack_forget()
-pane = ttk.PanedWindow(root, orient="horizontal"); pane.pack(fill="both", expand=True)
-app._ss_review_frame = pane
-left = ttk.Frame(pane); pane.add(left, weight=3)
-right = ttk.LabelFrame(pane, text="SlideShow Record"); pane.add(right, weight=2)
-app._build_editor_dialog_content(left)
-app._build_ss_record_panel(right)
+app._show_mode(pe.MODE_REVIEW)     # which is what builds a review
 root.update()
 
 failures = []

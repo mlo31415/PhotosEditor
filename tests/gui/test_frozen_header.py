@@ -49,7 +49,7 @@ app._ss_groups = pe._ss_group_by_photo(pe._collect_ss_records(tmp))
 app._ss_group_index = 0
 app._main_pane.pack_forget()
 pane = ttk.PanedWindow(root, orient="horizontal"); pane.pack(fill="both", expand=True)
-app._ss_review_frame = pane
+app._mode = pane
 left = ttk.Frame(pane); pane.add(left, weight=3)
 right = ttk.LabelFrame(pane, text="SlideShow Record"); pane.add(right, weight=2)
 app._build_editor_dialog_content(left)

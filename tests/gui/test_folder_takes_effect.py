@@ -151,7 +151,7 @@ def step_open():
     print("a review of folder A:")
     app._show_mode(pe.MODE_REVIEW)
     root.update()
-    check("review mode is open", app._ss_review_frame is not None)
+    check("review mode is open", app._mode == pe.MODE_REVIEW)
     check("showing folder A's photo", photo_id() == 11, photo_id())
     check("with A's names", reported_names() == ["Alpha 1", "Alpha 2", "Alpha 3"],
           reported_names())
@@ -176,7 +176,7 @@ def step_change():
 
 
 def step_applied():
-    check("the review is still open", app._ss_review_frame is not None)
+    check("the review is still open", app._mode == pe.MODE_REVIEW)
     check("it now shows folder B's photo", photo_id() == 22, photo_id())
     check("with B's names, not A's", reported_names() == ["Beta 1", "Beta 2"],
           reported_names())

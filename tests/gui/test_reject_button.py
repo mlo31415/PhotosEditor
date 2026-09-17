@@ -95,7 +95,7 @@ def labels():
             out.append(str(w.cget("text")))
         for c in w.winfo_children():
             walk(c)
-    walk(app._ss_review_frame)
+    walk(app._ss_record_host)       # the reports side, where the buttons are
     return out
 
 

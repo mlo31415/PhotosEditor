@@ -1395,9 +1395,8 @@ class PhotosEditor:
         # window's own "zoomed", which is whether it is maximised.
         self._mode:                str          = MODE_MOVE
         self._two_panel:           bool         = True
-        self._unzoomed_sash_frac:   float | None = None  # main pane sash as fraction [0,1] before zoom
-        self._unzoomed_source_sash: int   | None = None  # source hpane tree-column width before zoom
-        self._unzoomed_target_sash: int   | None = None  # target hpane tree-column width before zoom
+        self._mode_sash:           dict         = {}   # divider, per mode
+        self._editor_sash_set:     bool         = False
 
         # ── editor / viewer state ───────────────────────────────────────────
         self._viewer_image:        Image.Image | None = None
@@ -1442,10 +1441,8 @@ class PhotosEditor:
         self._restore_sharpen_var  = tk.DoubleVar(value=0.0)
 
         # ── editor dialog (built lazily on first double-click) ───────────────
-        self._editor_dlg: tk.Toplevel | None = None
 
         # ── Review SS Comments mode state ───────────────────────────────────
-        self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
         self._ss_source             = ""    # where the reports on screen came from
         self._ss_groups:       list = []    # unreviewed records, one list per photo
         self._ss_group_index:  int  = 0
@@ -1473,7 +1470,24 @@ class PhotosEditor:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<F5>", self._on_f5_refresh)
         self.root.bind("<Escape>", lambda e: self._on_close())  # same as the Exit button
+        # The editor's shortcuts.  Bound once, to the window: there is one
+        # editor and it is always built, so which mode is showing decides
+        # whether they have anything to act on -- rather than the bindings
+        # being put on and taken off as modes change, which used to take other
+        # handlers for the same key down with them.
         self.root.bind("<Control-z>", self._on_ctrl_z)
+        self.root.bind("<Control-u>", lambda e: self._upload_current_photo())
+        self.root.bind("<Control-s>", lambda e: self._upload_current_photo())
+        self.root.bind("<Control-y>", lambda e: self._crop_photo())
+        self.root.bind("<Control-i>", lambda e: self._open_in_irfanview())
+        self.root.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
+        self.root.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
+        self.root.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
+        self.root.bind("<Control-h>", lambda e: self._show_shortcuts_help())
+        # Only Review Comments walks photos with the arrows; _ss_arrow_step
+        # does nothing in the other two modes.
+        self.root.bind("<Left>",  self._ss_arrow_step)
+        self.root.bind("<Right>", self._ss_arrow_step)
         self._ctrl_held: bool = False
         self.root.bind("<KeyPress-Control_L>",   lambda e: setattr(self, '_ctrl_held', True),  add="+")
         self.root.bind("<KeyPress-Control_R>",   lambda e: setattr(self, '_ctrl_held', True),  add="+")
@@ -1549,6 +1563,19 @@ class PhotosEditor:
         )
         self._main_pane.add(self._target_panel.frame, weight=2)
 
+        # The editor, and the review's report panel, live in the same pane as
+        # the two thumbnail panels.  All four are built once and never
+        # destroyed: a mode is which two of them are shown, so nothing has to
+        # be torn down and put back, and nothing is left holding a widget that
+        # has gone.  A Tk widget cannot be reparented, which is exactly why
+        # they are all children of this one pane.
+        self._editor_host = ttk.Frame(self._main_pane)
+        self._build_editor_dialog_content(self._editor_host)
+        self._ss_record_host = ttk.LabelFrame(self._main_pane,
+                                              text="SlideShow Record", padding=6)
+        self._build_ss_record_panel(self._ss_record_host)
+        self._clear_editor()
+
         # Wire album-drag callbacks into each panel's tree widget.
         src, tgt = self._source_panel, self._target_panel
         src.atw._on_album_drag_start = (
@@ -1570,70 +1597,34 @@ class PhotosEditor:
         ttk.Label(status_bar, textvariable=self.status_var,
                   anchor="w").pack(side="left", padx=6, pady=2)
 
-    # ── Editor dialog: opened on double-click of any thumbnail ─────────────
-    def _open_editor_dialog(self, img_dict: dict):
-        """Open (or bring forward) the photo-editor dialog and load img_dict."""
-        dlg_alive = (self._editor_dlg is not None and
-                     self._editor_dlg.winfo_exists())
-        if not dlg_alive:
-            self._editor_dlg = tk.Toplevel(self.root)
-            self._editor_dlg.title("Photo Editor")
-            self._editor_dlg.minsize(600, 400)
-            self._editor_dlg.transient(self.root)   # always on top of main window
-            self._build_editor_dialog_content(self._editor_dlg)
-            saved_geo = self._state.get("editor_geometry", "")
-            if saved_geo:
-                try:
-                    self._editor_dlg.geometry(_geometry_on_screen(self._editor_dlg, saved_geo))
-                except Exception:
-                    saved_geo = ""
-            if not saved_geo:
-                # No saved size: fit all controls up to the screen limit.
-                self._editor_dlg.update_idletasks()
-                req_w = self._editor_dlg.winfo_reqwidth()
-                req_h = self._editor_dlg.winfo_reqheight()
-                scr_w = self._editor_dlg.winfo_screenwidth()
-                scr_h = self._editor_dlg.winfo_screenheight()
-                dlg_w = min(max(req_w, 900), scr_w - 40)
-                dlg_h = min(max(req_h, 700), scr_h - 80)
-                # Centre on screen
-                x = (scr_w - dlg_w) // 2
-                y = (scr_h - dlg_h) // 2
-                self._editor_dlg.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
-            self._editor_dlg.protocol("WM_DELETE_WINDOW", self._close_editor_dialog)
-            self._editor_dlg.bind("<Control-z>", lambda e: self._undo_edit())
-            self._editor_dlg.bind("<Control-y>", lambda e: self._crop_photo())
-            self._editor_dlg.bind("<Control-u>", lambda e: self._upload_current_photo())
-            self._editor_dlg.bind("<Control-s>", lambda e: self._upload_current_photo())
-            self._editor_dlg.bind("<Control-i>", lambda e: self._open_in_irfanview())
-            self._editor_dlg.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
-            self._editor_dlg.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
-            self._editor_dlg.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
-            self._editor_dlg.bind("<Escape>",    lambda e: self._close_editor_dialog())
-            self._editor_dlg.bind("<Control-h>", lambda e: self._show_shortcuts_help())
+    # ── The editor: the Edit Photos tab, opened by double-clicking a thumbnail ──
+    def _open_photo_in_editor(self, img_dict: dict):
+        """Show a photo in the editor, going to Edit Photos to do it.
+
+        There is one editor and it lives in a tab, so a double-click in Move
+        and Copy Photos goes there rather than opening a window of its own.
+        """
+        if self._mode != MODE_EDIT:
+            if not self._may_leave_mode(MODE_EDIT):
+                return
+            self._show_mode(MODE_EDIT)
         else:
-            self._editor_dlg.deiconify()
             self._save_current_custom_fields()  # preserve edits before wipe
             self._clear_editor()   # wipe previous image before new one loads
-        self._editor_dlg.lift()
-        self._editor_dlg.grab_set()
-        self._editor_dlg.focus_force()
         self._on_thumb_click(img_dict)
 
-    def _close_editor_dialog(self):
-        if self._editor_dlg is None or not self._editor_dlg.winfo_exists():
-            return      # embedded in the review split screen -- no dialog to close
-        self._save_current_custom_fields()
-        if not self._confirm_discard_edits(parent=self._editor_dlg, action="Close"):
+    def _close_editor(self):
+        """The editor's Close button: done with this photo, back to the album.
+
+        In Review Comments the editor is half the mode rather than something
+        opened on top of it, so there is nothing there to close.
+        """
+        if self._mode != MODE_EDIT:
             return
-        # Persist the dialog's current geometry so it reopens in the same spot.
-        # Take the main window's along with it: this writes the state file
-        # mid-session, and it should not put back the geometry from start-up.
-        self._state["editor_geometry"] = self._editor_dlg.geometry()
-        self._capture_window_state(self._state)
-        _save_state(self._state)
-        self._editor_dlg.grab_release()
-        self._editor_dlg.withdraw()
+        self._save_current_custom_fields()
+        if not self._confirm_discard_edits(action="Close"):
+            return
+        self._show_mode(MODE_MOVE)
         # Refresh the thumbnail in whichever grid it came from.
         self._refresh_current_thumbnail()
 
@@ -1865,7 +1856,7 @@ class PhotosEditor:
         self.upload_photo_btn.pack(side="left", padx=(0, 8))
 
         ttk.Button(centred, text="Close",
-                   command=self._close_editor_dialog).pack(side="left")
+                   command=self._close_editor).pack(side="left")
 
         dlg.after(100, self._set_initial_sash_positions)
 
@@ -1890,7 +1881,7 @@ class PhotosEditor:
             self.root.after(0, lambda: self._set_zoomed(True))
         sash_frac = self._state.get("sash_frac", None)
         if sash_frac is not None:
-            self._unzoomed_sash_frac = float(sash_frac)
+            self._mode_sash[MODE_MOVE] = float(sash_frac)
             self.root.after(200, lambda f=float(sash_frac): self._apply_main_sash_frac(f))
         # Stash saved album IDs so tree-population methods can restore them.
         # Do NOT load photos here — _populate_*_hierarchy_tree() will trigger
@@ -1977,12 +1968,24 @@ class PhotosEditor:
         except Exception:
             pass
 
-    def _set_initial_sash_positions(self):
-        """Give the photo viewer ~43% of the right panel height."""
+    def _set_initial_sash_positions(self, tries: int = 0):
+        """Give the photo viewer ~43% of the editor's height.
+
+        The editor is built at start-up but not shown until a mode calls for
+        it, and a pane that is not shown has no height to divide -- so this
+        gives up rather than polling for ever, and is asked again when the
+        editor first appears.  Done once: after that the divider is where the
+        user left it.
+        """
+        if self._editor_sash_set:
+            return
         total = self._editor_vpane.winfo_height()
         if total < 50:
-            self.root.after(50, self._set_initial_sash_positions)
+            if tries < 20:
+                self.root.after(50,
+                                lambda: self._set_initial_sash_positions(tries + 1))
             return
+        self._editor_sash_set = True
         self._editor_vpane.sashpos(0, round(total * 13 / 30))
 
     def _on_close(self):
@@ -2037,26 +2040,20 @@ class PhotosEditor:
         self._save_current_custom_fields()
         if not self._confirm_discard_edits(action="Quit"):
             return
-        state: dict = dict(self._state)   # preserve keys like editor_geometry
-        # Capture editor dialog size/position even if closed via app exit
-        if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
-            state["editor_geometry"] = self._editor_dlg.geometry()
+        state: dict = dict(self._state)
         self._capture_window_state(state, may_unmaximise=True)
         state[MODE_KEY] = self._mode
-        # Always save the two-panel sash as a fraction so it survives resizes
-        try:
-            if not self._two_panel:
-                frac = self._unzoomed_sash_frac if self._unzoomed_sash_frac is not None else 0.5
-            else:
-                total = self._main_pane.winfo_width()
-                sash  = self._main_pane.sashpos(0)
-                frac  = sash / total if total > 10 else 0.5
-            min_px   = self._min_sash_px()
-            total    = self._main_pane.winfo_width()
-            min_frac = min_px / total if total > 0 else 0.10
-            state["sash_frac"] = max(min_frac, min(1.0 - min_frac, frac))
-        except Exception:
-            pass
+        # The divider, as a fraction so it survives the window being resized.
+        # Only Move and Copy Photos' is kept: it is the one whose two halves
+        # are both albums, where a lopsided split is worth remembering.
+        self._remember_sash()
+        frac = self._mode_sash.get(MODE_MOVE)
+        if frac is not None:
+            try:
+                min_frac = self._min_sash_px() / max(self._main_pane.winfo_width(), 1)
+                state["sash_frac"] = max(min_frac, min(1.0 - min_frac, frac))
+            except Exception:
+                pass
         if self.current_album_id is not None:
             state["album_id"]   = self.current_album_id
             state["album_name"] = self.current_album_name
@@ -2170,75 +2167,92 @@ class PhotosEditor:
         self._save_current_custom_fields()
         return self._confirm_discard_edits(action=f"Go to {going_to}")
 
+    # What each mode shows, left to right, and how the width is shared out.
+    # Every one of these is built once at start-up; a mode change is which two
+    # are in the pane.
+    _MODE_PANES = {
+        MODE_MOVE:   (("source", 2), ("target", 2)),
+        MODE_EDIT:   (("source", 2), ("editor", 3)),
+        MODE_REVIEW: (("editor", 3), ("record", 2)),
+    }
+    # Where the divider sits the first time a mode is shown
+    _MODE_SASH = {MODE_MOVE: 0.5, MODE_EDIT: 0.4, MODE_REVIEW: 0.6}
+
+    def _pane_widget(self, name: str):
+        return {"source": self._source_panel.frame,
+                "target": self._target_panel.frame,
+                "editor": self._editor_host,
+                "record": self._ss_record_host}[name]
+
     def _show_mode(self, mode: str):
         """Lay the window out for one mode.  The switch is already agreed."""
         if self._mode == MODE_REVIEW and mode != MODE_REVIEW:
             self._exit_ss_review()
+        self._remember_sash()
         self._mode = mode
+        self._show_panes(mode)
         if mode == MODE_REVIEW:
             self._enter_ss_review()
-        else:
-            self._set_two_panel(mode == MODE_MOVE)
         self._select_tab(mode)
 
-    def _set_two_panel(self, on: bool):
-        """Whether the second thumbnail panel is shown: it is what Move and
-        Copy Photos needs and Edit Photos does not."""
-        if on == self._two_panel:
-            return
-        self._two_panel = on
-        if on:
-            # ── both panels: re-add the target, then restore all four sashes ──
-            self._main_pane.add(self._target_panel.frame, weight=2)
-            frac     = self._unzoomed_sash_frac   if self._unzoomed_sash_frac   is not None else 0.5
-            src_sash = self._unzoomed_source_sash
-            tgt_sash = self._unzoomed_target_sash
+    def _show_panes(self, mode: str):
+        """Put the two widgets this mode wants into the pane, and nothing else.
 
-            def _restore_main(frac=frac, src=src_sash, tgt=tgt_sash):
-                total = self._main_pane.winfo_width()
-                if total < 50:
-                    self.root.after(20, lambda: _restore_main(frac, src, tgt))
-                    return
-                min_px   = self._min_sash_px()
-                min_frac = min_px / total
-                clamped  = max(min_frac, min(1.0 - min_frac, frac))
-                try:
-                    self._main_pane.sashpos(0, round(total * clamped))
-                    # Force geometry to propagate so sub-panel winfo_width() is current
-                    self._main_pane.update_idletasks()
-                except Exception:
-                    pass
-                # Apply sub-sashes now that panel widths are settled
-                if src is not None:
-                    self._apply_sub_sash(self._source_panel.hpane, src)
-                if tgt is not None:
-                    self._apply_sub_sash(self._target_panel.hpane, tgt)
-
-            self.root.after(50, _restore_main)
-        else:
-            # ── one panel: remember all four sashes, then hide the target ──
+        Forgetting a pane hides it; it keeps everything it holds -- which is
+        what lets one editor serve both the mode that edits a photo and the
+        mode that reviews the reports on one.
+        """
+        # The tree/grid divider inside each thumbnail panel is measured in
+        # pixels, so it drifts when the panel's width changes.  Note it before
+        # the widths change and put it back once they have settled.
+        inner = {}
+        for name, panel in (("source", self._source_panel),
+                            ("target", self._target_panel)):
             try:
-                total = self._main_pane.winfo_width()
-                sash  = self._main_pane.sashpos(0)
-                self._unzoomed_sash_frac = sash / total if total > 10 else 0.5
+                inner[name] = panel.hpane.sashpos(0)
             except Exception:
-                self._unzoomed_sash_frac = 0.5
-            try:
-                self._unzoomed_source_sash = self._source_panel.hpane.sashpos(0)
-            except Exception:
-                self._unzoomed_source_sash = None
-            try:
-                self._unzoomed_target_sash = self._target_panel.hpane.sashpos(0)
-            except Exception:
-                self._unzoomed_target_sash = None
+                pass
+        self._two_panel = mode == MODE_MOVE
 
-            self._main_pane.forget(self._target_panel.frame)
+        for pane in list(self._main_pane.panes()):
+            self._main_pane.forget(pane)
+        for name, weight in self._MODE_PANES[mode]:
+            self._main_pane.add(self._pane_widget(name), weight=weight)
+        if any(n == "editor" for n, _w in self._MODE_PANES[mode]):
+            # It has a height to divide now, which it had not at start-up
+            self.root.after(60, self._set_initial_sash_positions)
 
-            # Keep source tree at same pixel width (fills proportionally after expand)
-            src_sash = self._unzoomed_source_sash
-            if src_sash is not None:
-                self.root.after(50, lambda s=src_sash:
-                    self._apply_sub_sash(self._source_panel.hpane, s))
+        frac = self._mode_sash.get(mode, self._MODE_SASH[mode])
+
+        def settle(frac=frac, inner=inner, tries=0):
+            total = self._main_pane.winfo_width()
+            if total < 50:
+                if tries < 25:          # the pane has not been given its size yet
+                    self.root.after(20, lambda: settle(frac, inner, tries + 1))
+                return
+            min_frac = self._min_sash_px() / total
+            try:
+                self._main_pane.sashpos(
+                    0, round(total * max(min_frac, min(1.0 - min_frac, frac))))
+                self._main_pane.update_idletasks()
+            except Exception:
+                pass
+            for name, pos in inner.items():
+                panel = self._source_panel if name == "source" else self._target_panel
+                if any(n == name for n, _w in self._MODE_PANES[self._mode]):
+                    self._apply_sub_sash(panel.hpane, pos)
+
+        self.root.after(50, settle)
+
+    def _remember_sash(self):
+        """Where the divider was left in the mode being leaving, so that coming
+        back to it looks the way it was left."""
+        try:
+            total = self._main_pane.winfo_width()
+            if total > 10:
+                self._mode_sash[self._mode] = self._main_pane.sashpos(0) / total
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------------
     # Status
@@ -2988,46 +3002,12 @@ class PhotosEditor:
         self._ss_source = _ss_review_source()
         records = _collect_ss_records(self._ss_source)
 
-        # The editor's widgets are about to be rebuilt inside the review panel,
-        # so an open editor dialog must be closed first.  Anything unsaved in
-        # it has already been asked about, by the guard on the tab switch.
-        if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
-            self._state["editor_geometry"] = self._editor_dlg.geometry()
-            self._editor_dlg.grab_release()
-            self._editor_dlg.destroy()
-        self._editor_dlg   = None
-        self._photo_edited = False
-
         # All the reports on one photo are reviewed together, so work by photo
         self._ss_groups      = _ss_group_by_photo(records)
         self._ss_group_index = 0
-
-        self._main_pane.pack_forget()
-
-        pane = ttk.PanedWindow(self.root, orient="horizontal")
-        pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
-        self._ss_review_frame = pane
-        editor_side = ttk.Frame(pane)                       # the photo editor, left
-        pane.add(editor_side, weight=3)
-        record_side = ttk.LabelFrame(pane, text="SlideShow Record", padding=6)
-        pane.add(record_side, weight=2)                     # the SS input, right
-        self._build_editor_dialog_content(editor_side)      # the full editor, embedded
-        self._build_ss_record_panel(record_side)
+        # The photo on screen is whatever the mode before this was looking at;
+        # the review is about to put its own there.
         self._clear_editor()
-
-        # Editor keyboard shortcuts, normally bound to the editor dialog
-        self.root.bind("<Control-z>", lambda e: self._undo_edit())
-        self.root.bind("<Control-u>", lambda e: self._upload_current_photo())
-        self.root.bind("<Control-s>", lambda e: self._upload_current_photo())
-        self.root.bind("<Control-y>", lambda e: self._crop_photo())
-        self.root.bind("<Control-i>", lambda e: self._open_in_irfanview())
-        self.root.bind("<Control-l>", lambda e: self._insert_lr_prefix(replace=False))
-        self.root.bind("<Control-L>", lambda e: self._insert_lr_prefix(replace=True))
-        self.root.bind("<Control-n>", lambda e: self._toggle_needs_id_tag())
-        self.root.bind("<Control-h>", lambda e: self._show_shortcuts_help())
-        # Arrow keys walk the photos, like Prev and Next
-        self.root.bind("<Left>",  self._ss_arrow_step)
-        self.root.bind("<Right>", self._ss_arrow_step)
 
         if self._ss_groups:
             self._show_ss_photo()
@@ -3055,31 +3035,18 @@ class PhotosEditor:
         about by the guard on the tab switch."""
         self._ss_load_gen += 1              # invalidate any in-flight record load
         self._ss_face_hl_ids = []
-        self._ss_set_busy(False)            # while the canvas is still there
-        self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
-        self._ss_review_frame = None
+        self._ss_set_busy(False)
         self._ss_source = ""
-        # Reset editor state that pointed into the destroyed widgets; the next
-        # thumbnail double-click rebuilds the editor in its normal dialog.
-        # custom_vars among them: it holds the field widgets themselves, and
-        # asking a destroyed one for its text raises -- which, on the way out
-        # of a callback like Exit, stops the quit and says nothing.  The fields
-        # have already been saved and asked about by _ss_confirm_discard above.
-        self._viewer_image       = None
-        self._viewer_tk          = None
-        self._current_image_dict = None
-        self.custom_vars         = {}
-        self._loaded_fields      = {}
-        self._edit_history.clear()
-        self._photo_edited = False
-
-        for seq in ("<Control-u>", "<Control-s>", "<Control-y>", "<Control-i>",
-                    "<Control-l>", "<Control-L>", "<Control-n>", "<Control-h>",
-                    "<Left>", "<Right>"):
-            self.root.unbind(seq)
-        self.root.bind("<Control-z>", self._on_ctrl_z)   # back to drag-drop undo
-
-        self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
+        # Let go of the reports: the panel stays, but what is in it belonged to
+        # a review that is over, and the face pictures are the larger part of
+        # what this mode holds on to.
+        self._ss_groups = []
+        self._ss_face_thumbs = {}
+        self._ss_build_matrix([], [])
+        self._ss_count_var.set("")
+        self._ss_album_var.set("")
+        # The photo itself stays loaded: it is the same editor either way, and
+        # Edit Photos can carry straight on with it.
 
     # True if it is OK to leave the current record (asking about unsaved edits)
     def _ss_confirm_discard(self) -> bool:
@@ -3483,7 +3450,7 @@ class PhotosEditor:
         record's, unedited and loaded -- the logged boxes are in the original
         photo's coordinates, which a crop or rotate would invalidate."""
         self._ss_clear_face_highlight()
-        if self._ss_review_frame is None or not self._ss_group:
+        if self._mode != MODE_REVIEW or not self._ss_group:
             return
         rec = self._ss_group[0]
         img = self._current_image_dict
@@ -3653,7 +3620,7 @@ class PhotosEditor:
     def _ss_on_canvas_motion(self, event):
         """Moving over a face on the photo lights its row, the same way moving
         over the row rings the face."""
-        if self._ss_review_frame is None:
+        if self._mode != MODE_REVIEW:
             return
         self._ss_set_hover(self._ss_face_at(self.canvas.canvasx(event.x),
                                             self.canvas.canvasy(event.y)))
@@ -3875,7 +3842,7 @@ class PhotosEditor:
             def _apply(info=info, img=img, scale=scale):
                 # A superseded load leaves the cursor alone: the load that
                 # replaced it is still running and will clear it when it lands
-                if gen != self._ss_load_gen or self._ss_review_frame is None:
+                if gen != self._ss_load_gen or self._mode != MODE_REVIEW:
                     return
                 # This fetched the photo's details and a copy to cut the face
                 # thumbnails from; the photo the editor shows is downloaded by
@@ -3916,7 +3883,7 @@ class PhotosEditor:
             logger.warning(f"Could not load photo {photo_id} for SS review: {e}")
 
             def failed(e=e):
-                if gen != self._ss_load_gen or self._ss_review_frame is None:
+                if gen != self._ss_load_gen or self._mode != MODE_REVIEW:
                     return
                 if _is_missing_photo(e):
                     # The log outlives the photo: a report can name a photo
@@ -3993,7 +3960,7 @@ class PhotosEditor:
         # last real value rather than becoming None, which its type does not allow
         self._drag_batch = []
         self._press_pos = None
-        self._open_editor_dialog(img_dict)
+        self._open_photo_in_editor(img_dict)
 
     def _start_drag(self, event, img_dict: dict, side: str):
         self._drag_is_copy = self._ctrl_held
@@ -4860,7 +4827,7 @@ class PhotosEditor:
             return False
         # In SS review mode the name is held at "Loading…" (set by _show_ss_record)
         # until the image itself is on screen, so the editor side stays wholly blank
-        if self._ss_review_frame is None:
+        if self._mode != MODE_REVIEW:
             self.photo_label_var.set(name)
         self.photo_dim_var.set("")
         self.url_var.set(url)
@@ -4923,7 +4890,7 @@ class PhotosEditor:
         quickly leaves an earlier load still in flight, and when it lands late
         it must not take the cursor off while the newer one is still fetching.
         """
-        if self._ss_review_frame is None:
+        if self._mode != MODE_REVIEW:
             return                              # the cursor was never put on
         group = self._ss_group
         if group and img_dict.get("id") != group[0].get("photo id"):
@@ -5098,7 +5065,7 @@ class PhotosEditor:
         # already in rather than filing it somewhere unrelated.
         upload_album_id   = self.current_album_id
         upload_album_name = self.current_album_name
-        if self._ss_review_frame is not None:
+        if self._mode == MODE_REVIEW:
             cats = img_dict.get("categories") or []
             if cats and cats[0].get("id") is not None:
                 upload_album_id   = int(cats[0]["id"])
@@ -5181,12 +5148,12 @@ class PhotosEditor:
                 self._refresh_current_thumbnail()
             self.set_status(f"Uploaded: {fname}" if uploaded_file
                             else f"Saved details of {fname} (photo not re-uploaded)")
-            if self._ss_review_frame is not None:
+            if self._mode == MODE_REVIEW:
                 # Saving is the reviewer acting on the record: that settles it,
                 # so mark it done and move on
                 self._ss_mark_done()
             else:
-                self._close_editor_dialog()
+                self._close_editor()
 
         def worker():
             temp_path = None
@@ -5588,8 +5555,7 @@ class PhotosEditor:
             return
         self._caption_editor_open = True
 
-        parent = self._editor_dlg if (self._editor_dlg and
-                                       self._editor_dlg.winfo_exists()) else self.root
+        parent = self.root
         win = tk.Toplevel(parent)
         name = (self._current_image_dict or {}).get("name") or \
                (self._current_image_dict or {}).get("file", "")
@@ -6375,8 +6341,7 @@ class PhotosEditor:
     ]
 
     def _show_shortcuts_help(self):
-        parent = self._editor_dlg if (self._editor_dlg and
-                                      self._editor_dlg.winfo_exists()) else self.root
+        parent = self.root
         dlg = tk.Toplevel(parent)
         dlg.title("Keyboard Shortcuts")
         dlg.resizable(False, False)

@@ -116,8 +116,21 @@ def click_tab(label):
     root.update()
 
 
-def panels_up():
-    return len(app._main_pane.panes())
+def panes():
+    """Which of the four long-lived children are showing, left to right."""
+    named = {str(app._source_panel.frame): "source",
+             str(app._target_panel.frame): "target",
+             str(app._editor_host):        "editor",
+             str(app._ss_record_host):     "record"}
+    return [named.get(str(p), str(p)) for p in app._main_pane.panes()]
+
+
+def editor_widget():
+    """One of the editor's field widgets, to watch for it being rebuilt."""
+    return app.custom_vars.get("comments")
+
+
+built = {}
 
 
 def step_start():
@@ -126,17 +139,22 @@ def step_start():
           tab_labels() == list(pe._MODES), tab_labels())
     check("it opens in Move and Copy Photos", app._mode == pe.MODE_MOVE, app._mode)
     check("and the strip agrees", on_strip() == app._mode, on_strip())
-    check("both thumbnail panels are up", panels_up() == 2, panels_up())
+    check("two albums side by side", panes() == ["source", "target"], panes())
+    built["editor"] = editor_widget()
+    check("the editor is built, though not showing",
+          built["editor"] is not None and "editor" not in panes(), panes())
     root.after(200, step_edit)
 
 
 def step_edit():
-    print("\nEdit Photos drops the second panel:")
+    print("\nEdit Photos swaps the second album for the editor:")
     click_tab(pe.MODE_EDIT)
     check("the mode changed", app._mode == pe.MODE_EDIT, app._mode)
-    check("one panel now", panels_up() == 1, panels_up())
+    check("album on the left, editor on the right",
+          panes() == ["source", "editor"], panes())
     click_tab(pe.MODE_MOVE)
-    check("and Move and Copy brings it back", panels_up() == 2, panels_up())
+    check("and Move and Copy brings the album back",
+          panes() == ["source", "target"], panes())
     root.after(200, step_review)
 
 
@@ -145,10 +163,15 @@ def step_review():
     click_tab(pe.MODE_REVIEW)
     root.update()
     check("the mode changed", app._mode == pe.MODE_REVIEW, app._mode)
-    check("the split screen is up", app._ss_review_frame is not None)
+    check("editor on the left, reports on the right",
+          panes() == ["editor", "record"], panes())
     check("with the report's photo", app._ss_groups
           and app._ss_groups[0][0]["photo id"] == 11,
           [g[0]["photo id"] for g in app._ss_groups])
+    print("\nand through all of that it is the same editor:")
+    check("the very same field widget", editor_widget() is built["editor"],
+          f"{built['editor']} -> {editor_widget()}")
+    check("which is still alive", bool(editor_widget().winfo_exists()))
     root.after(1200, step_refuse)
 
 
@@ -181,14 +204,37 @@ def step_empty():
     click_tab(pe.MODE_REVIEW)
     root.update()
     check("the tab is showing", app._mode == pe.MODE_REVIEW, app._mode)
-    check("the split screen is up", app._ss_review_frame is not None)
+    check("the split screen is up", panes() == ["editor", "record"], panes())
     check("nothing was asked", not boxes, str([b[1] for b in boxes]))
     check("no photos in the queue", app._ss_groups == [], app._ss_groups)
     check("and it says so", "No photos in the queue" in app._ss_count_var.get(),
           app._ss_count_var.get())
     check("with the status pointing somewhere", "No unreviewed" in app.status_var.get(),
           app.status_var.get())
-    root.after(400, step_remembered)
+    root.after(400, step_double_click)
+
+
+def step_double_click():
+    print("\na double-click in Move and Copy goes to the editor:")
+    app._show_mode(pe.MODE_MOVE); root.update()
+    # Only the going-there is under test, so the loading is stood in for
+    opened, real = [], pe.PhotosEditor._on_thumb_click
+    pe.PhotosEditor._on_thumb_click = lambda self, info: opened.append(info["id"])
+    try:
+        app._open_photo_in_editor({"id": 11, "file": "p11.jpg", "name": "p11.jpg"})
+        root.update()
+        check("it went to Edit Photos", app._mode == pe.MODE_EDIT, app._mode)
+        check("with the editor beside the album",
+              panes() == ["source", "editor"], panes())
+        check("and the photo was asked for", opened == [11], opened)
+    finally:
+        pe.PhotosEditor._on_thumb_click = real
+
+    print("\nand the editor's Close comes back to the album:")
+    app._close_editor(); root.update()
+    check("back in Move and Copy", app._mode == pe.MODE_MOVE, app._mode)
+    check("two albums again", panes() == ["source", "target"], panes())
+    root.after(300, step_remembered)
 
 
 def step_remembered():
@@ -216,8 +262,9 @@ def finish(second, again):
           again._mode)
     check("the strip shows it too", on_strip(again) == pe.MODE_EDIT,
           on_strip(again))
-    check("and only one panel is up", len(again._main_pane.panes()) == 1,
-          len(again._main_pane.panes()))
+    check("laid out for it", len(again._main_pane.panes()) == 2
+          and str(again._editor_host) in [str(p) for p in again._main_pane.panes()],
+          [str(p) for p in again._main_pane.panes()])
     if errors:
         failures.append("an exception escaped")
     second.destroy()

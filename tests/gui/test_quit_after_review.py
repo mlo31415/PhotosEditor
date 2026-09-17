@@ -93,7 +93,7 @@ def still_there():
 def run():
     print("into review mode, then some work, then out again:")
     app._show_mode(pe.MODE_REVIEW); root.update()
-    check("review mode opened", app._ss_review_frame is not None)
+    check("review mode opened", app._mode == pe.MODE_REVIEW)
 
     # the work: type into one of the editor's fields, the way a review goes
     typed = False
@@ -104,17 +104,23 @@ def run():
     check("something was typed into the editor", typed)
     root.update()
 
+    was = app.custom_vars.get("comments")
     app._show_mode(pe.MODE_MOVE); root.update()
-    check("review mode closed", app._ss_review_frame is None)
-    check("the destroyed field widgets were let go", app.custom_vars == {},
-          list(app.custom_vars))
+    check("review mode closed", app._mode != pe.MODE_REVIEW)
+    # The bug this test was written for was a field widget destroyed with the
+    # review and still held on to.  There is one editor now and it is never
+    # destroyed, so what has to be true is the opposite: the widgets are the
+    # same ones, alive, and readable in any mode.
+    check("the fields are the same widgets", app.custom_vars.get("comments") is was)
+    check("which are still alive", bool(was.winfo_exists()))
+    check("and can be read outside the review",
+          isinstance(app._editor_field_values(), dict))
 
-    print("\ngoing back in rebuilds the editor, so the fields work again:")
+    print("\nand again after going back in and out:")
     app._show_mode(pe.MODE_REVIEW); root.update()
-    check("the fields are there again", bool(app.custom_vars),
-          list(app.custom_vars))
-    check("and they can be read", isinstance(app._editor_field_values(), dict))
     app._show_mode(pe.MODE_MOVE); root.update()
+    check("still the same widgets", app.custom_vars.get("comments") is was)
+    check("still readable", isinstance(app._editor_field_values(), dict))
 
     print("\nnow quit, the way Exit and the X do:")
     errors.clear()
