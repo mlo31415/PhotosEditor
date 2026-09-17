@@ -2077,12 +2077,17 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # The three modes
     # -----------------------------------------------------------------------
-    # The strip: plain text, and a bar under the one you are on.  Nothing is
-    # drawn around a tab -- the boxes and bevels of a notebook are what make a
-    # tab strip look like a filing cabinet.
-    _TAB_TEXT      = "#5f6368"      # the modes you are not in
-    _TAB_TEXT_ON   = "#1a1a1a"      # the one you are
-    _TAB_TEXT_OVER = "#202124"      # under the pointer
+    # The strip is one outlined group divided into three, so that it reads as
+    # something to click without the boxes and bevels that made the notebook
+    # look like a filing cabinet.  The mode you are in is the lit segment, and
+    # carries the bar; the other two are flat and grey.
+    _TAB_BORDER    = "#c3c8cd"      # around the group, and between segments
+    _TAB_FILL      = "#f1f3f5"      # the modes you are not in
+    _TAB_FILL_OVER = "#e4e8ec"      # under the pointer
+    _TAB_FILL_ON   = "#ffffff"      # the one you are
+    _TAB_TEXT      = "#5f6368"
+    _TAB_TEXT_OVER = "#202124"
+    _TAB_TEXT_ON   = "#1a1a1a"
     _TAB_BAR       = "#1a73e8"      # the bar under the current mode
     _TAB_PAD_X     = 14
     _TAB_PAD_Y     = 5
@@ -2101,40 +2106,50 @@ class PhotosEditor:
         bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
         strip = tk.Frame(self.root, background=bg)
         strip.pack(side="top", fill="x", padx=8)
-        # A hairline the tabs sit on, so the strip reads as one thing
-        tk.Frame(strip, height=1, background="#d8d8d8").pack(
-            side="bottom", fill="x")
+        # The group's own background is the outline: the segments inside it are
+        # laid one pixel apart, so what shows between and around them is a
+        # hairline border rather than three separate boxes.
+        group = tk.Frame(strip, background=self._TAB_BORDER)
+        group.pack(side="left", pady=5)
 
         self._tab_widgets = {}
+        last = _MODES[-1]
         for label in _MODES:
-            tab = tk.Frame(strip, background=bg, cursor="hand2")
-            tab.pack(side="left")
-            text = tk.Label(tab, text=label, background=bg,
+            tab = tk.Frame(group, background=self._TAB_FILL, cursor="hand2")
+            tab.pack(side="left", padx=(1, 1 if label == last else 0), pady=1)
+            text = tk.Label(tab, text=label, background=self._TAB_FILL,
                             fg=self._TAB_TEXT, cursor="hand2",
                             padx=self._TAB_PAD_X, pady=self._TAB_PAD_Y)
             text.pack(side="top")
-            bar = tk.Frame(tab, height=self._TAB_BAR_PX, background=bg)
+            bar = tk.Frame(tab, height=self._TAB_BAR_PX,
+                           background=self._TAB_FILL)
             bar.pack(side="top", fill="x")
             for w in (tab, text):
                 w.bind("<Button-1>", lambda _e, m=label: self._request_mode(m))
                 w.bind("<Enter>",    lambda _e, m=label: self._tab_hover(m, True))
                 w.bind("<Leave>",    lambda _e, m=label: self._tab_hover(m, False))
-            self._tab_widgets[label] = (text, bar)
+            self._tab_widgets[label] = (tab, text, bar)
         self._paint_tabs()
 
     def _tab_hover(self, mode: str, over: bool):
         if mode == self._mode:
-            return                          # the current one is already dark
-        text, _bar = self._tab_widgets[mode]
-        text.config(fg=self._TAB_TEXT_OVER if over else self._TAB_TEXT)
+            return                          # the current one is already lit
+        tab, text, bar = self._tab_widgets[mode]
+        fill = self._TAB_FILL_OVER if over else self._TAB_FILL
+        tab.config(background=fill)
+        bar.config(background=fill)
+        text.config(background=fill,
+                    fg=self._TAB_TEXT_OVER if over else self._TAB_TEXT)
 
     def _paint_tabs(self):
-        """Show which mode is current: darker text, and the bar under it."""
-        bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
-        for label, (text, bar) in self._tab_widgets.items():
-            on = label == self._mode
-            text.config(fg=self._TAB_TEXT_ON if on else self._TAB_TEXT)
-            bar.config(background=self._TAB_BAR if on else bg)
+        """Show which mode is current: the lit segment, with the bar under it."""
+        for label, (tab, text, bar) in self._tab_widgets.items():
+            on   = label == self._mode
+            fill = self._TAB_FILL_ON if on else self._TAB_FILL
+            tab.config(background=fill)
+            text.config(background=fill,
+                        fg=self._TAB_TEXT_ON if on else self._TAB_TEXT)
+            bar.config(background=self._TAB_BAR if on else fill)
 
     def _request_mode(self, mode: str):
         """A tab was clicked.  Nothing moves unless the mode being left agrees

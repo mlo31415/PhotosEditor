@@ -105,14 +105,14 @@ def on_strip(which=None):
     under it.  Read from the widgets, not from _mode, so that the strip
     disagreeing with the window is something a test can catch."""
     widgets = (which or app)._tab_widgets
-    lit = [label for label, (_text, bar) in widgets.items()
+    lit = [label for label, (_tab, _text, bar) in widgets.items()
            if str(bar.cget("background")) == app._TAB_BAR]
     return lit[0] if len(lit) == 1 else f"{len(lit)} tabs lit: {lit}"
 
 
 def click_tab(label):
     """A real click on the tab, so the binding decides what happens."""
-    app._tab_widgets[label][0].event_generate("<Button-1>")
+    app._tab_widgets[label][1].event_generate("<Button-1>")
     root.update()
 
 
