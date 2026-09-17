@@ -97,16 +97,22 @@ def check(label, ok, detail=""):
 
 
 def tab_labels():
-    return [app._tabs.tab(t, "text") for t in app._tabs.tabs()]
+    return list(app._tab_widgets)
 
 
-def on_strip():
-    return app._tabs.tab(app._tabs.select(), "text")
+def on_strip(which=None):
+    """Which mode the strip is showing as current: the one with the bar
+    under it.  Read from the widgets, not from _mode, so that the strip
+    disagreeing with the window is something a test can catch."""
+    widgets = (which or app)._tab_widgets
+    lit = [label for label, (_text, bar) in widgets.items()
+           if str(bar.cget("background")) == app._TAB_BAR]
+    return lit[0] if len(lit) == 1 else f"{len(lit)} tabs lit: {lit}"
 
 
 def click_tab(label):
-    """What clicking a tab does: select it and let the binding run."""
-    app._tabs.select(tab_labels().index(label))
+    """A real click on the tab, so the binding decides what happens."""
+    app._tab_widgets[label][0].event_generate("<Button-1>")
     root.update()
 
 
@@ -208,8 +214,8 @@ def finish(second, again):
     second.update()
     check("it opens in the mode it was left in", again._mode == pe.MODE_EDIT,
           again._mode)
-    check("the strip shows it too",
-          again._tabs.tab(again._tabs.select(), "text") == pe.MODE_EDIT)
+    check("the strip shows it too", on_strip(again) == pe.MODE_EDIT,
+          on_strip(again))
     check("and only one panel is up", len(again._main_pane.panes()) == 1,
           len(again._main_pane.panes()))
     if errors:

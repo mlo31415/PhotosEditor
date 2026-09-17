@@ -1503,17 +1503,7 @@ class PhotosEditor:
         # panels or destroying and rebuilding them on every switch.  The strip
         # names the modes; what they show is packed below it and swapped in and
         # out, which is how one set of panels serves all three.
-        self._tabs = ttk.Notebook(self.root, style="Modes.TNotebook")
-        self._style_mode_tabs()
-        for label in _MODES:
-            self._tabs.add(ttk.Frame(self._tabs, height=0), text=label)
-        self._tabs.pack(side="top", fill="x", padx=4)
-        # A Notebook selects its first page as soon as it has one, and that
-        # counts as a tab change.  Put the strip on the mode the window is
-        # actually in before listening, or starting up reads as a click on
-        # whichever tab happens to be first.
-        self._select_tab(self._mode)
-        self._tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self._build_mode_tabs()
 
         # ── main pane ─────────────────────────────────────────────────────────
         self._main_pane = ttk.PanedWindow(self.root, orient="horizontal")
@@ -2087,65 +2077,77 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # The three modes
     # -----------------------------------------------------------------------
-    def _style_mode_tabs(self):
-        """Make the strip look like the control it is.
+    # The strip: plain text, and a bar under the one you are on.  Nothing is
+    # drawn around a tab -- the boxes and bevels of a notebook are what make a
+    # tab strip look like a filing cabinet.
+    _TAB_TEXT      = "#5f6368"      # the modes you are not in
+    _TAB_TEXT_ON   = "#1a1a1a"      # the one you are
+    _TAB_TEXT_OVER = "#202124"      # under the pointer
+    _TAB_BAR       = "#1a73e8"      # the bar under the current mode
+    _TAB_PAD_X     = 14
+    _TAB_PAD_Y     = 5
+    _TAB_BAR_PX    = 3
 
-        A default Notebook tab is a hairline of small grey text, which is easy
-        to miss when it is the only way between the three modes.  The type is
-        bigger, there is room around it, and the tab you are on is bold and
-        lighter than the two you are not.  Windows draws its own tab
-        background, so the colours are set through a theme that does not.
+    def _build_mode_tabs(self):
+        """The three modes, as a row of tabs.
+
+        Built by hand rather than from a Notebook: its pages would have to be
+        empty anyway -- a Tk widget belongs to one parent for life, so real
+        pages would mean a second copy of the thumbnail panels -- and a strip
+        of labels is both plainer to look at and simpler to reason about.  A
+        click asks to change mode and is allowed to be refused, so the strip
+        only ever repaints once the change has actually happened.
         """
-        style = ttk.Style()
-        if "clam" in style.theme_names():
-            # Only the Notebook's own elements are taken from clam; every other
-            # widget keeps the platform's look.
-            style.element_create("Modes.Notebook.tab", "from", "clam")
-            style.layout("Modes.TNotebook.Tab", [
-                ("Modes.Notebook.tab", {"sticky": "nswe", "children": [
-                    ("Notebook.padding", {"side": "top", "sticky": "nswe",
-                                          "children": [
-                        ("Notebook.label", {"side": "top", "sticky": ""})]})]})])
-        plain = tkfont.nametofont("TkDefaultFont").copy()
-        plain.configure(size=abs(plain.cget("size")) + 1)
-        bold = plain.copy()
-        bold.configure(weight="bold")
-        style.configure("Modes.TNotebook", tabmargins=(6, 5, 6, 0),
-                        borderwidth=0)
-        style.configure("Modes.TNotebook.Tab", padding=(20, 8), font=plain,
-                        background="#dcdcdc", foreground="#404040",
-                        borderwidth=1)
-        style.map("Modes.TNotebook.Tab",
-                  font=[("selected", bold)],
-                  background=[("selected", "#ffffff"), ("active", "#eeeeee")],
-                  foreground=[("selected", "#000000")],
-                  expand=[("selected", (1, 1, 1, 0))])
+        bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
+        strip = tk.Frame(self.root, background=bg)
+        strip.pack(side="top", fill="x", padx=8)
+        # A hairline the tabs sit on, so the strip reads as one thing
+        tk.Frame(strip, height=1, background="#d8d8d8").pack(
+            side="bottom", fill="x")
 
-    def _on_tab_changed(self, _event=None):
-        """A tab was clicked.  The switch has already happened as far as the
-        strip is concerned, so refusing one means putting the strip back.
+        self._tab_widgets = {}
+        for label in _MODES:
+            tab = tk.Frame(strip, background=bg, cursor="hand2")
+            tab.pack(side="left")
+            text = tk.Label(tab, text=label, background=bg,
+                            fg=self._TAB_TEXT, cursor="hand2",
+                            padx=self._TAB_PAD_X, pady=self._TAB_PAD_Y)
+            text.pack(side="top")
+            bar = tk.Frame(tab, height=self._TAB_BAR_PX, background=bg)
+            bar.pack(side="top", fill="x")
+            for w in (tab, text):
+                w.bind("<Button-1>", lambda _e, m=label: self._request_mode(m))
+                w.bind("<Enter>",    lambda _e, m=label: self._tab_hover(m, True))
+                w.bind("<Leave>",    lambda _e, m=label: self._tab_hover(m, False))
+            self._tab_widgets[label] = (text, bar)
+        self._paint_tabs()
 
-        Selecting the tab that is already current -- which is what putting it
-        back does -- is not a switch and must not ask anything, or refusing
-        once would ask again for ever.
-        """
-        try:
-            wanted = self._tabs.tab(self._tabs.select(), "text")
-        except tk.TclError:
+    def _tab_hover(self, mode: str, over: bool):
+        if mode == self._mode:
+            return                          # the current one is already dark
+        text, _bar = self._tab_widgets[mode]
+        text.config(fg=self._TAB_TEXT_OVER if over else self._TAB_TEXT)
+
+    def _paint_tabs(self):
+        """Show which mode is current: darker text, and the bar under it."""
+        bg = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
+        for label, (text, bar) in self._tab_widgets.items():
+            on = label == self._mode
+            text.config(fg=self._TAB_TEXT_ON if on else self._TAB_TEXT)
+            bar.config(background=self._TAB_BAR if on else bg)
+
+    def _request_mode(self, mode: str):
+        """A tab was clicked.  Nothing moves unless the mode being left agrees
+        to be left, and the strip follows the window rather than leading it."""
+        if mode == self._mode:
             return
-        if wanted == self._mode:
+        if not self._may_leave_mode(mode):
             return
-        if not self._may_leave_mode(wanted):
-            self._select_tab(self._mode)
-            return
-        self._show_mode(wanted)
+        self._show_mode(mode)
 
     def _select_tab(self, mode: str):
-        """Put the strip on a mode without it counting as a switch."""
-        try:
-            self._tabs.select(_MODES.index(mode))
-        except (ValueError, tk.TclError):
-            pass
+        """Put the strip on a mode.  Called by _show_mode, once it is true."""
+        self._paint_tabs()
 
     def _may_leave_mode(self, going_to: str) -> bool:
         """Whether the mode being left can be left.  Anything typed but not
