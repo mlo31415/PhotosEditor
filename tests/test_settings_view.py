@@ -304,7 +304,7 @@ class TheSlideShowFolder(Rows):
     def test_a_folder_that_is_not_there_is_refused(self):
         with self.assertRaises(ValueError) as caught:
             pe._parse_setting(self.setting(), str(self.tmp / "no such folder"))
-        self.assertIn("no folder at", str(caught.exception))
+        self.assertIn("nothing at", str(caught.exception))
 
     def test_blank_means_not_set_rather_than_an_error(self):
         self.assertIsNone(pe._parse_setting(self.setting(), "  "))
@@ -316,13 +316,13 @@ class TheSlideShowFolder(Rows):
 
     def test_reading_it_back_resolves_a_relative_one(self):
         self.write({pe.SS_REVIEW_DIR_KEY: "XX Photos"})
-        got = pe._ss_review_dir()
+        got = pe._ss_review_source()
         self.assertTrue(Path(got).is_absolute(), got)
         self.assertTrue(got.endswith("XX Photos"), got)
 
     def test_nothing_set_reads_as_empty(self):
         self.write({})
-        self.assertEqual(pe._ss_review_dir(), "")
+        self.assertEqual(pe._ss_review_source(), "")
 
 
 class MovingItOutOfTheStateFile(Rows):

@@ -183,9 +183,10 @@ _OP_PARAMS = [
              "float",
              "How fast to talk to Piwigo.  Lower is gentler on the server."),
     _Setting(SS_REVIEW_DIR_KEY, "SlideShow Files Folder", None, "folder",
-             "Where Review SS Comments looks for the "
-             f'"{SS_LOG_GLOB}" files.  That one folder only -- it does not '
-             "look inside folders within it.",
+             "What Review SS Comments reads.  Folder… takes every "
+             f'"{SS_LOG_GLOB}" file in one folder -- that folder only, not the '
+             "folders within it -- and any SlideShow adds later.  Files… takes "
+             "the files chosen and no others.",
              browse_glob=SS_LOG_GLOB),
 ]
 
@@ -207,6 +208,38 @@ def _count_matching(folder: str, glob: str) -> int:
         return -1
 
 
+def _ss_choice_summary(text: str, glob: str) -> tuple:
+    """What the Settings box amounts to and the colour to say it in.
+
+    The box holds either a folder -- every log in it, however many that turns
+    out to be -- or particular logs separated by ";".  Which of the two it is,
+    and whether it is any good, is the thing that cannot be seen by looking at
+    a path, so it is spelled out under the box.
+    """
+    parts = [p.strip() for p in (text or "").split(";") if p.strip()]
+    if not parts:
+        return "", "gray"
+    if len(parts) == 1 and Path(parts[0]).is_dir():
+        n = _count_matching(parts[0], glob)
+        if n < 1:
+            return f"no {glob} files in it", "#a04000"
+        return f"every {glob} file in it — {n} of them now", "gray"
+    here     = [p for p in parts if Path(p).is_file()]
+    missing  = len(parts) - len(here)
+    not_logs = [p for p in here if not Path(p).match(glob)]
+    if not here:
+        return ("there is nothing at that path" if len(parts) == 1
+                else "none of those files are there"), "#a04000"
+    said = ("that one file only" if len(here) == 1
+            else f"those {len(here)} files only")
+    if missing:
+        return f"{said} — {missing} of them no longer there", "#a04000"
+    if not_logs:
+        return (f"{said} — {len(not_logs)} of them not a {glob} file",
+                "#a04000")
+    return said, "gray"
+
+
 def _pick_folder_by_its_files(parent, title: str, glob: str,
                               initialdir: str = "") -> str:
     """Choose a folder by picking one of the files in it.
@@ -224,18 +257,46 @@ def _pick_folder_by_its_files(parent, title: str, glob: str,
     return str(Path(chosen).resolve().parent) if chosen else ""
 
 
-def _ss_review_dir() -> str:
-    """The folder Review SS Comments reads, from the params file.
+def _ss_review_source():
+    """What Review SS Comments reads, from the params file.
 
-    A relative one is resolved against the program's own directory rather than
-    whatever directory it was started from -- which is where the value written
-    before this became a setting came from, and what made it depend on how the
-    program was launched.
+    Either a folder, meaning every SlideShow log in it, or a list of paths,
+    meaning those particular logs and no others.  A relative folder is resolved
+    against the program's own directory rather than whatever directory it was
+    started from -- which is where the value written before this became a
+    setting came from, and what made it depend on how the program was launched.
     """
-    folder = str(_store.load_op_params().get(SS_REVIEW_DIR_KEY, "") or "")
+    value = _store.load_op_params().get(SS_REVIEW_DIR_KEY, "")
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    folder = str(value or "")
     if folder and not Path(folder).is_absolute():
         return str((_SCRIPT_DIR / folder).resolve())
     return folder
+
+
+def _ss_logs_in(source) -> list:
+    """The SlideShow logs a review source names, oldest first.
+
+    A folder means every log in it -- including any SlideShow writes while the
+    review is open, which is why a folder is kept as a folder rather than
+    turned into a list of its files once.  A list means those logs alone.
+    Either way only files that are actually there come back.
+    """
+    if isinstance(source, (str, Path)):
+        folder = Path(source)
+        return sorted(folder.glob(SS_LOG_GLOB)) if str(source) and folder.is_dir() else []
+    return [p for p in (Path(f) for f in source or []) if p.is_file()]
+
+
+def _ss_source_label(source) -> str:
+    """A review source in words, for a message about it."""
+    if isinstance(source, (str, Path)):
+        return str(source)
+    files = [Path(f) for f in source or []]
+    if len(files) == 1:
+        return str(files[0])
+    return f"the {len(files)} chosen files"
 
 
 def _migrate_ss_review_dir(state: dict) -> None:
@@ -290,6 +351,9 @@ def _setting_display(setting: "_Setting", value) -> str:
     if setting.kind == "bool":
         return "Yes" if value else "No"
     if setting.kind == "folder":
+        # A folder, or the particular files chosen instead of one
+        if isinstance(value, list):
+            return "; ".join(str(v) for v in value)
         return str(value)
     shown = value / setting.scale
     if setting.kind == "int" and float(shown).is_integer():
@@ -310,12 +374,23 @@ def _parse_setting(setting: "_Setting", text: str):
             return None
         raise ValueError(f"{setting.label} cannot be blank")
     if setting.kind == "folder":
-        # Stored as an absolute path: a relative one would be read against
-        # whatever directory the program happened to be started from.
-        folder = Path(text).expanduser()
-        if not folder.is_dir():
-            raise ValueError(f"{setting.label}: there is no folder at {text}")
-        return str(folder.resolve())
+        # One folder means every log in it; anything else is the particular
+        # logs to use, separated by ";" as the box shows them.  Stored as
+        # absolute paths: a relative one would be read against whatever
+        # directory the program happened to be started from.
+        parts = [p.strip() for p in text.split(";") if p.strip()]
+        if len(parts) == 1 and Path(parts[0]).expanduser().is_dir():
+            return str(Path(parts[0]).expanduser().resolve())
+        chosen = []
+        for part in parts:
+            path = Path(part).expanduser()
+            if not path.exists():
+                raise ValueError(f"{setting.label}: there is nothing at {part}")
+            if path.is_dir():
+                raise ValueError(f"{setting.label}: {part} is a folder, and only "
+                                 f"one folder at a time can be used")
+            chosen.append(str(path.resolve()))
+        return chosen
     try:
         typed = float(text.replace(",", ""))
     except ValueError:
@@ -537,13 +612,14 @@ def _ss_rename_completed_log(path: Path) -> "Path | None":
         return None
 
 
-def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> tuple:
+def _ss_mark_record_done_in_log(source, rec: dict) -> tuple:
     """Record that rec has been reviewed, in the log that holds it.
 
-    The log is re-read before it is rewritten, so anything SlideShow appended
-    since it was loaded survives; and because SlideShow renames its log on
-    every save, the whole folder is searched when the expected name is gone.
-    A log left with every record done is renamed with SS_COMPLETED_PREFIX.
+    source is the review's folder or its list of logs.  The log is re-read
+    before it is rewritten, so anything SlideShow appended since it was loaded
+    survives; and because SlideShow renames its log on every save, the rest of
+    the source is searched when the expected name is gone.  A log left with
+    every record done is renamed with SS_COMPLETED_PREFIX.
 
     Returns (found, completed_path): found is False if the record could not be
     located anywhere, completed_path the log's new name if this mark finished
@@ -551,9 +627,10 @@ def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> tuple:
     """
     key = _ss_record_key(rec)
     named = rec.get("_log file")
-    candidates = [directory / named] if named else []
-    candidates += [p for p in sorted(directory.glob(SS_LOG_GLOB))
-                   if p not in candidates]
+    logs = _ss_logs_in(source)
+    # The log the record came out of first, then the others
+    candidates = ([p for p in logs if p.name == named] +
+                  [p for p in logs if p.name != named])
     for path in candidates:
         if not path.exists():
             continue
@@ -572,15 +649,15 @@ def _ss_mark_record_done_in_log(directory: Path, rec: dict) -> tuple:
     return False, None
 
 
-def _collect_ss_records(directory: Path) -> list[dict]:
-    """Every record not yet marked done, from every SlideShow log in directory,
-    ordered so that photos carrying more than one record come first, each
-    photo's records adjacent, followed by the photos with a single record.
-    Groups and records keep the order they were met in (log files oldest first,
-    since their names carry the date).  Each record gains a "_log file" key
-    naming its log."""
+def _collect_ss_records(source) -> list[dict]:
+    """Every record not yet marked done, from every SlideShow log the source
+    names -- a folder, or particular logs -- ordered so that photos carrying
+    more than one record come first, each photo's records adjacent, followed by
+    the photos with a single record.  Groups and records keep the order they
+    were met in (log files oldest first, since their names carry the date).
+    Each record gains a "_log file" key naming its log."""
     records: list[dict] = []
-    for path in sorted(directory.glob(SS_LOG_GLOB)):
+    for path in _ss_logs_in(source):
         try:
             recs = _read_ss_records(path)
         except Exception as e:
@@ -1354,7 +1431,7 @@ class PhotosEditor:
 
         # ── Review SS Comments mode state ───────────────────────────────────
         self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
-        self._ss_dir:          str  = ""    # the folder the reports on screen came from
+        self._ss_source             = ""    # where the reports on screen came from
         self._ss_groups:       list = []    # unreviewed records, one list per photo
         self._ss_group_index:  int  = 0
         self._ss_rows:         list = []    # faces of the photo under review
@@ -2776,35 +2853,35 @@ class PhotosEditor:
             self._enter_ss_review()
 
     def _enter_ss_review(self):
-        # The SS output folder is a setting, changeable in the Settings window.
-        # It is also asked for here when it is unset or no longer any good --
-        # but only written once it has actually yielded records, so a wrong pick
-        # never becomes the remembered one.
-        d = _ss_review_dir()
+        # Where to read is a setting, changeable in the Settings window: a
+        # folder, or particular logs.  It is also asked for here when it is
+        # unset or no longer any good -- but only written once it has actually
+        # yielded records, so a wrong pick never becomes the remembered one.
+        source = _ss_review_source()
         while True:
-            if not d or not Path(d).is_dir():
-                d = _pick_folder_by_its_files(
+            if not _ss_logs_in(source):
+                source = _pick_folder_by_its_files(
                     self.root, f"Select any {SS_LOG_GLOB} file in the folder",
-                    SS_LOG_GLOB, d)
-                if not d:
+                    SS_LOG_GLOB, source if isinstance(source, str) else "")
+                if not source:
                     return
-            # Every log in the folder, photos with several records first
-            records = _collect_ss_records(Path(d))
+            records = _collect_ss_records(source)
             if records:
                 break
             if not messagebox.askyesno(
                     "Review SS Comments",
-                    f"No unreviewed SlideShow records found in\n{d}\n\n"
+                    "No unreviewed SlideShow records found in\n"
+                    f"{_ss_source_label(source)}\n\n"
                     "Select a different folder?",
                     parent=self.root):
                 return
-            d = ""      # forces the folder dialog on the next pass
-        if d != _ss_review_dir():
-            _store.set_op_param(SS_REVIEW_DIR_KEY, d)
-        # Remembered, because the reports being reviewed are these ones from
-        # this folder: marking them done must go back to the folder they came
-        # out of even if the setting is changed while the review is open.
-        self._ss_dir = d
+            source = ""     # forces the folder dialog on the next pass
+        if source != _ss_review_source():
+            _store.set_op_param(SS_REVIEW_DIR_KEY, source)
+        # Remembered, because the reports being reviewed are the ones these
+        # logs held: marking them done must go back to where they came from
+        # even if the setting is changed while the review is open.
+        self._ss_source = source
 
         # The editor's widgets are about to be rebuilt inside the review panel,
         # so an open editor dialog must be closed (and its edits dealt with) first.
@@ -2861,7 +2938,7 @@ class PhotosEditor:
         self._ss_set_busy(False)            # while the canvas is still there
         self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
         self._ss_review_frame = None
-        self._ss_dir = ""
+        self._ss_source = ""
         # Reset editor state that pointed into the destroyed widgets; the next
         # thumbnail double-click rebuilds the editor in its normal dialog.
         self._viewer_image       = None
@@ -3529,22 +3606,22 @@ class PhotosEditor:
         Returns (all_marked, completed_log).  A record that cannot be found is
         reported and left alone rather than being dropped silently.
         """
-        # The folder these reports were read from, which is not necessarily the
+        # Where these reports were read from, which is not necessarily the
         # setting any more: changing the setting reloads the review, but a
         # reload refused over unsaved edits leaves these ones still on screen.
-        review_dir = self._ss_dir
-        # An unset folder would make this Path(""), the working directory, where
-        # the record certainly is not -- say so rather than searching the wrong place
-        if not review_dir or not Path(review_dir).is_dir():
+        source = self._ss_source
+        # With no logs to write back to there is nowhere to record the mark --
+        # say so rather than reporting every record as missing
+        if not _ss_logs_in(source):
             messagebox.showwarning(
                 "Review SS Comments",
-                "The SlideShow output folder is not set, or is no longer "
-                "reachable, so nothing can be marked done.", parent=self.root)
+                "The SlideShow logs are not set, or are no longer reachable, "
+                "so nothing can be marked done.", parent=self.root)
             return False, None
 
         completed, missing = None, []
         for rec in records:
-            found, done_log = _ss_mark_record_done_in_log(Path(review_dir), rec)
+            found, done_log = _ss_mark_record_done_in_log(source, rec)
             if found:
                 rec["done"] = True
                 completed = done_log or completed
@@ -5743,41 +5820,92 @@ class PhotosEditor:
             blockers.append("changes to " + ", ".join(fields) + " have not been uploaded")
         return blockers
 
-    def _browse_for_folder(self, parent, var: tk.StringVar, setting: "_Setting"):
-        """The Browse button beside a folder setting.  Opens where the setting
-        already points, so choosing a neighbour of it is a short trip."""
-        current = (var.get() or "").strip()
-        if setting.browse_glob:
-            # Pick one of the files that make it the right folder, so they can
-            # be seen while looking
-            chosen = _pick_folder_by_its_files(
-                parent, f"Select any {setting.browse_glob} file in the folder",
-                setting.browse_glob, current)
-        else:
-            chosen = filedialog.askdirectory(
-                parent=parent, mustexist=True,
-                title=f"Select the {setting.label.lower()}",
-                initialdir=current if current and Path(current).is_dir() else None)
-        if chosen:
-            var.set(str(Path(chosen).resolve()))
+    @staticmethod
+    def _browse_start(var: tk.StringVar) -> str:
+        """Where a chooser should open: the folder the box already names, or
+        the one holding the first file it names.  Choosing a neighbour of what
+        is already set is then a short trip."""
+        first = (var.get() or "").split(";")[0].strip()
+        if not first:
+            return ""
+        path = Path(first)
+        return str(path if path.is_dir() else path.parent)
 
-    def _ss_reload_for_new_folder(self):
-        """Apply a changed SlideShow folder to a review that is already open.
+    def _browse_folder_of_logs(self, parent, var: tk.StringVar,
+                               setting: "_Setting"):
+        """Folder…: every log in one folder, the ones there now and any
+        SlideShow writes later.
+
+        Chosen by picking one of the files that make it the right folder: the
+        folder chooser shows only folders, so it cannot be used to tell the
+        right one from an empty one, which is the whole question here.
+        """
+        folder = _pick_folder_by_its_files(
+            parent, f"Select any {setting.browse_glob} file in the folder",
+            setting.browse_glob, self._browse_start(var))
+        if not folder:
+            return
+        if _count_matching(folder, setting.browse_glob) < 1:
+            messagebox.showwarning(
+                "No SlideShow Files",
+                f"There are no {setting.browse_glob} files in\n{folder}\n\n"
+                "Nothing has been changed.", parent=parent)
+            return
+        var.set(folder)
+
+    def _browse_particular_logs(self, parent, var: tk.StringVar,
+                                setting: "_Setting"):
+        """Files…: these logs and no others.
+
+        Files that are not SlideShow logs have nothing in them to review, so
+        they are left out rather than stored and puzzled over later -- and if
+        that leaves nothing at all, the setting is not touched.
+        """
+        start = self._browse_start(var)
+        chosen = filedialog.askopenfilenames(
+            parent=parent, multiple=True,
+            title=f"Select the {setting.browse_glob} files to review",
+            initialdir=start if start and Path(start).is_dir() else None,
+            filetypes=[(f"SlideShow output files ({setting.browse_glob})",
+                        setting.browse_glob), ("All files", "*.*")])
+        if not chosen:
+            return
+        paths   = [Path(p) for p in chosen]
+        logs    = [p for p in paths if p.match(setting.browse_glob)]
+        ignored = [p.name for p in paths if p not in logs]
+        if not logs:
+            messagebox.showwarning(
+                "No SlideShow Files",
+                f"None of those are {setting.browse_glob} files, so there is "
+                "nothing there to review.\n\nNothing has been changed.",
+                parent=parent)
+            return
+        var.set("; ".join(str(p.resolve()) for p in logs))
+        if ignored:
+            messagebox.showinfo(
+                "Not SlideShow Files",
+                f"{len(logs)} file{'s' if len(logs) != 1 else ''} will be "
+                f"reviewed.\n\nLeft out, not being {setting.browse_glob} "
+                "files:\n\n  " + "\n  ".join(ignored), parent=parent)
+
+    def _ss_reload_for_new_source(self):
+        """Apply a changed SlideShow folder, or choice of logs, to a review
+        that is already open.
 
         Every other setting is read from the file where it is used, so saving
         is all it takes.  This one is read once, as a review begins: the
-        reports on screen came out of the folder that is no longer the setting,
-        so applying the change means putting the new folder's reports in their
-        place -- a fresh review, which asks about unsaved edits the way leaving
-        one always does.  Refusing that keeps the review that is running, and
-        the new folder waits for the next one.
+        reports on screen came out of what is no longer the setting, so
+        applying the change means putting the new logs' reports in their place
+        -- a fresh review, which asks about unsaved edits the way leaving one
+        always does.  Refusing that keeps the review that is running, and the
+        new choice waits for the next one.
         """
         if self._ss_review_frame is None:
             return                      # the next review reads the setting anyway
         self._exit_ss_review()
         if self._ss_review_frame is not None:
-            self.set_status("Settings saved — the new folder's reports will come "
-                            "up the next time you enter Review SS Comments.")
+            self.set_status("Settings saved — the new reports will come up the "
+                            "next time you enter Review SS Comments.")
             return
         self._enter_ss_review()
 
@@ -5858,29 +5986,29 @@ class PhotosEditor:
                 box = ttk.Frame(rows)
                 box.grid(row=r, column=1, columnspan=2, sticky="ew",
                          padx=(8, 6), pady=(6, 0))
-                ttk.Entry(box, textvariable=var, width=52).pack(
+                ttk.Entry(box, textvariable=var, width=44).pack(
                     side="left", fill="x", expand=True)
-                ttk.Button(box, text="Browse…", width=9,
+                # Two ways to choose, because they mean different things: a
+                # folder is whatever is in it, the files are just those files
+                ttk.Button(box, text="Folder…", width=8,
                            command=lambda v=var, s=setting:
-                               self._browse_for_folder(dlg, v, s)).pack(
+                               self._browse_folder_of_logs(dlg, v, s)).pack(
+                                   side="left", padx=(4, 0))
+                ttk.Button(box, text="Files…", width=8,
+                           command=lambda v=var, s=setting:
+                               self._browse_particular_logs(dlg, v, s)).pack(
                                    side="left", padx=(4, 0))
                 if setting.browse_glob:
-                    # Say what is in the folder named in the box, so the right
-                    # one can be told from a wrong one without leaving here
+                    # Say what the box amounts to, so the right choice can be
+                    # told from a wrong one without leaving here
                     found = ttk.Label(rows, foreground="gray",
                                       font=("TkDefaultFont", 8))
                     found.grid(row=r + 1, column=1, columnspan=2, sticky="w",
                                padx=(8, 0))
 
                     def count(*_, v=var, s=setting, lbl=found):
-                        folder = (v.get() or "").strip()
-                        n = _count_matching(folder, s.browse_glob)
-                        lbl.config(
-                            text="" if not folder else
-                            "there is no such folder" if n < 0 else
-                            f"no {s.browse_glob} files in it" if n == 0 else
-                            f"{n} {s.browse_glob} file{'s' if n != 1 else ''} in it",
-                            foreground="gray" if n > 0 else "#a04000")
+                        text, colour = _ss_choice_summary(v.get(), s.browse_glob)
+                        lbl.config(text=text, foreground=colour)
                     var.trace_add("write", count)
                     count()
                     r += 1              # the count takes a line of its own
@@ -5976,9 +6104,9 @@ class PhotosEditor:
             self.set_status("Settings saved" + (": " + "; ".join(said) if said else "."))
             # Everything is read from the file where it is used, so a change is
             # already in force -- except in a review already under way, which
-            # read the folder as it began and is showing the old one's reports.
+            # read the logs as it began and is showing the old ones' reports.
             if any(s.key == SS_REVIEW_DIR_KEY for s in changed):
-                self._ss_reload_for_new_folder()
+                self._ss_reload_for_new_source()
             # Only a setting marked otherwise needs more.
             restart_for = [s.label for s in changed if s.restart_needed]
             if restart_for:
