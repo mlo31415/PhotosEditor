@@ -167,7 +167,7 @@ def step_folder():
           pe._ss_choice_summary(folder_box(dlg).get(), pe.SS_LOG_GLOB)[0])
     press(dlg, "Save"); root.update()
     check("the folder is stored as a folder", stored() == str(A), stored())
-    app._enter_ss_review(); root.update()
+    app._show_mode(pe.MODE_REVIEW); root.update()
     check("the review has both logs' photos", photos_in_review() == [11, 22],
           photos_in_review())
     root.after(1200, step_files)

@@ -92,7 +92,7 @@ def still_there():
 
 def run():
     print("into review mode, then some work, then out again:")
-    app._enter_ss_review(); root.update()
+    app._show_mode(pe.MODE_REVIEW); root.update()
     check("review mode opened", app._ss_review_frame is not None)
 
     # the work: type into one of the editor's fields, the way a review goes
@@ -104,17 +104,17 @@ def run():
     check("something was typed into the editor", typed)
     root.update()
 
-    app._exit_ss_review(); root.update()
+    app._show_mode(pe.MODE_MOVE); root.update()
     check("review mode closed", app._ss_review_frame is None)
     check("the destroyed field widgets were let go", app.custom_vars == {},
           list(app.custom_vars))
 
     print("\ngoing back in rebuilds the editor, so the fields work again:")
-    app._enter_ss_review(); root.update()
+    app._show_mode(pe.MODE_REVIEW); root.update()
     check("the fields are there again", bool(app.custom_vars),
           list(app.custom_vars))
     check("and they can be read", isinstance(app._editor_field_values(), dict))
-    app._exit_ss_review(); root.update()
+    app._show_mode(pe.MODE_MOVE); root.update()
 
     print("\nnow quit, the way Exit and the X do:")
     errors.clear()

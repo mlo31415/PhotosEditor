@@ -87,7 +87,7 @@ root = tk.Tk(); root.geometry("1500x850")
 app = pe.PhotosEditor(root)
 pe._store.set_op_param(pe.SS_REVIEW_DIR_KEY, str(tmp))
 pe._collect_ss_records_real = pe._collect_ss_records
-app._enter_ss_review()
+app._show_mode(pe.MODE_REVIEW)
 root.update()
 
 failures, seen = [], {}

@@ -149,7 +149,7 @@ def photo_id():
 
 def step_open():
     print("a review of folder A:")
-    app._enter_ss_review()
+    app._show_mode(pe.MODE_REVIEW)
     root.update()
     check("review mode is open", app._ss_review_frame is not None)
     check("showing folder A's photo", photo_id() == 11, photo_id())

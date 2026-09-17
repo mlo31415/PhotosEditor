@@ -130,6 +130,16 @@ UPLOADS_ENABLED_KEY = "uploads_enabled"
 SS_REVIEW_DIR_KEY = "ss_review_dir"
 SS_LOG_GLOB       = "SlideShow Output *.json"
 
+# The three things PhotosEditor is for, in the order they appear as tabs.  The
+# labels are the modes: they are what the tab strip shows, what the state file
+# remembers, and what _show_mode is asked for.
+MODE_REVIEW = "Review Comments"
+MODE_EDIT   = "Edit Photos"
+MODE_MOVE   = "Move and Copy Photos"
+_MODES      = (MODE_EDIT, MODE_MOVE, MODE_REVIEW)
+MODE_KEY    = "mode"        # in the state file.  NOT "zoomed", which is the
+                            # window's maximised-ness and always has been.
+
 
 def _uploads_enabled() -> bool:
     """Whether uploading to Piwigo is turned on in the params file."""
@@ -183,7 +193,7 @@ _OP_PARAMS = [
              "float",
              "How fast to talk to Piwigo.  Lower is gentler on the server."),
     _Setting(SS_REVIEW_DIR_KEY, "SlideShow Files Folder", None, "folder",
-             "What Review SS Comments reads.  Folder… takes every "
+             "What the Review tab reads.  Folder… takes every "
              f'"{SS_LOG_GLOB}" file in one folder -- that folder only, not the '
              "folders within it -- and any SlideShow adds later.  Files… takes "
              "the files chosen and no others.",
@@ -1379,7 +1389,12 @@ class PhotosEditor:
         self._album_drag_label:      tk.Label     | None     = None
         self._album_drag_motion_id:  str                     = ""
         self._album_drag_release_id: str                     = ""
-        self._zoomed:               bool         = False
+        # Which of the three modes is showing, and whether the second
+        # thumbnail panel is up.  Only Move and Copy Photos wants both panels,
+        # so the two travel together -- but they are not the same thing as the
+        # window's own "zoomed", which is whether it is maximised.
+        self._mode:                str          = MODE_MOVE
+        self._two_panel:           bool         = True
         self._unzoomed_sash_frac:   float | None = None  # main pane sash as fraction [0,1] before zoom
         self._unzoomed_source_sash: int   | None = None  # source hpane tree-column width before zoom
         self._unzoomed_target_sash: int   | None = None  # target hpane tree-column width before zoom
@@ -1476,19 +1491,29 @@ class PhotosEditor:
         toolbar = ttk.Frame(self.root, padding=(4, 2))
         toolbar.pack(side="top", fill="x")
 
-        self._zoom_btn = ttk.Button(toolbar, text="Zoom",
-                                    command=self._toggle_zoom)
-        self._zoom_btn.pack(side="left", padx=2)
-
-        self._ss_review_btn = ttk.Button(toolbar, text="Review SS Comments",
-                                         command=self._toggle_ss_review)
-        self._ss_review_btn.pack(side="left", padx=2)
-
         ttk.Button(toolbar, text="Settings…",
                    command=self._show_settings).pack(side="left", padx=2)
 
         ttk.Button(toolbar, text="Exit",
                    command=self._on_close).pack(side="right", padx=2)
+
+        # ── the three modes, as tabs ──────────────────────────────────────────
+        # The pages are empty on purpose: a Tk widget belongs to one parent for
+        # life, so real pages would mean either a second copy of the thumbnail
+        # panels or destroying and rebuilding them on every switch.  The strip
+        # names the modes; what they show is packed below it and swapped in and
+        # out, which is how one set of panels serves all three.
+        self._tabs = ttk.Notebook(self.root, style="Modes.TNotebook")
+        self._style_mode_tabs()
+        for label in _MODES:
+            self._tabs.add(ttk.Frame(self._tabs, height=0), text=label)
+        self._tabs.pack(side="top", fill="x", padx=4)
+        # A Notebook selects its first page as soon as it has one, and that
+        # counts as a tab change.  Put the strip on the mode the window is
+        # actually in before listening, or starting up reads as a click on
+        # whichever tab happens to be first.
+        self._select_tab(self._mode)
+        self._tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # ── main pane ─────────────────────────────────────────────────────────
         self._main_pane = ttk.PanedWindow(self.root, orient="horizontal")
@@ -1890,6 +1915,11 @@ class PhotosEditor:
         if target_id is not None:
             self._saved_target_album_id   = target_id
             self._saved_target_album_name = target_name
+        # The mode last in use.  After the albums above, and deferred, so that
+        # the window and its panels exist before a mode rearranges them.
+        mode = self._state.get(MODE_KEY, MODE_MOVE)
+        if mode in _MODES and mode != self._mode:
+            self.root.after(250, lambda m=mode: self._show_mode(m))
 
     # ── Maximised state ──────────────────────────────────────────────────────
     # Tk reports a maximised window's geometry as its maximised size, and setting
@@ -2022,9 +2052,10 @@ class PhotosEditor:
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
             state["editor_geometry"] = self._editor_dlg.geometry()
         self._capture_window_state(state, may_unmaximise=True)
-        # Always save the unzoomed sash as a fraction so it survives window resizes
+        state[MODE_KEY] = self._mode
+        # Always save the two-panel sash as a fraction so it survives resizes
         try:
-            if self._zoomed:
+            if not self._two_panel:
                 frac = self._unzoomed_sash_frac if self._unzoomed_sash_frac is not None else 0.5
             else:
                 total = self._main_pane.winfo_width()
@@ -2050,15 +2081,98 @@ class PhotosEditor:
 
     def _on_f5_refresh(self, _event=None):
         self._load_album_photos()
-        if not self._zoomed and self.target_album_id is not None:
+        if self._two_panel and self.target_album_id is not None:
             self._load_target_album_photos()
 
-    def _toggle_zoom(self):
-        if self._zoomed:
-            # ── Unzoom: re-add target panel, then restore all four sash positions ──
+    # -----------------------------------------------------------------------
+    # The three modes
+    # -----------------------------------------------------------------------
+    def _style_mode_tabs(self):
+        """Make the strip look like the control it is.
+
+        A default Notebook tab is a hairline of small grey text, which is easy
+        to miss when it is the only way between the three modes.  The type is
+        bigger, there is room around it, and the tab you are on is bold and
+        lighter than the two you are not.  Windows draws its own tab
+        background, so the colours are set through a theme that does not.
+        """
+        style = ttk.Style()
+        if "clam" in style.theme_names():
+            # Only the Notebook's own elements are taken from clam; every other
+            # widget keeps the platform's look.
+            style.element_create("Modes.Notebook.tab", "from", "clam")
+            style.layout("Modes.TNotebook.Tab", [
+                ("Modes.Notebook.tab", {"sticky": "nswe", "children": [
+                    ("Notebook.padding", {"side": "top", "sticky": "nswe",
+                                          "children": [
+                        ("Notebook.label", {"side": "top", "sticky": ""})]})]})])
+        plain = tkfont.nametofont("TkDefaultFont").copy()
+        plain.configure(size=abs(plain.cget("size")) + 1)
+        bold = plain.copy()
+        bold.configure(weight="bold")
+        style.configure("Modes.TNotebook", tabmargins=(6, 5, 6, 0),
+                        borderwidth=0)
+        style.configure("Modes.TNotebook.Tab", padding=(20, 8), font=plain,
+                        background="#dcdcdc", foreground="#404040",
+                        borderwidth=1)
+        style.map("Modes.TNotebook.Tab",
+                  font=[("selected", bold)],
+                  background=[("selected", "#ffffff"), ("active", "#eeeeee")],
+                  foreground=[("selected", "#000000")],
+                  expand=[("selected", (1, 1, 1, 0))])
+
+    def _on_tab_changed(self, _event=None):
+        """A tab was clicked.  The switch has already happened as far as the
+        strip is concerned, so refusing one means putting the strip back.
+
+        Selecting the tab that is already current -- which is what putting it
+        back does -- is not a switch and must not ask anything, or refusing
+        once would ask again for ever.
+        """
+        try:
+            wanted = self._tabs.tab(self._tabs.select(), "text")
+        except tk.TclError:
+            return
+        if wanted == self._mode:
+            return
+        if not self._may_leave_mode(wanted):
+            self._select_tab(self._mode)
+            return
+        self._show_mode(wanted)
+
+    def _select_tab(self, mode: str):
+        """Put the strip on a mode without it counting as a switch."""
+        try:
+            self._tabs.select(_MODES.index(mode))
+        except (ValueError, tk.TclError):
+            pass
+
+    def _may_leave_mode(self, going_to: str) -> bool:
+        """Whether the mode being left can be left.  Anything typed but not
+        uploaded is asked about, and the answer may be no."""
+        self._save_current_custom_fields()
+        return self._confirm_discard_edits(action=f"Go to {going_to}")
+
+    def _show_mode(self, mode: str):
+        """Lay the window out for one mode.  The switch is already agreed."""
+        if self._mode == MODE_REVIEW and mode != MODE_REVIEW:
+            self._exit_ss_review()
+        self._mode = mode
+        if mode == MODE_REVIEW:
+            self._enter_ss_review()
+        else:
+            self._set_two_panel(mode == MODE_MOVE)
+        self._select_tab(mode)
+
+    def _set_two_panel(self, on: bool):
+        """Whether the second thumbnail panel is shown: it is what Move and
+        Copy Photos needs and Edit Photos does not."""
+        if on == self._two_panel:
+            return
+        self._two_panel = on
+        if on:
+            # ── both panels: re-add the target, then restore all four sashes ──
             self._main_pane.add(self._target_panel.frame, weight=2)
-            self._zoom_btn.config(text="Zoom")
-            self._zoomed = False
             frac     = self._unzoomed_sash_frac   if self._unzoomed_sash_frac   is not None else 0.5
             src_sash = self._unzoomed_source_sash
             tgt_sash = self._unzoomed_target_sash
@@ -2085,7 +2199,7 @@ class PhotosEditor:
 
             self.root.after(50, _restore_main)
         else:
-            # ── Zoom: snapshot all four raw sash values, then hide target panel ──
+            # ── one panel: remember all four sashes, then hide the target ──
             try:
                 total = self._main_pane.winfo_width()
                 sash  = self._main_pane.sashpos(0)
@@ -2108,9 +2222,6 @@ class PhotosEditor:
             if src_sash is not None:
                 self.root.after(50, lambda s=src_sash:
                     self._apply_sub_sash(self._source_panel.hpane, s))
-
-            self._zoom_btn.config(text="Unzoom")
-            self._zoomed = True
 
     # -----------------------------------------------------------------------
     # Status
@@ -2846,49 +2957,24 @@ class PhotosEditor:
     # -----------------------------------------------------------------------
     # Review SS Comments  (split screen: embedded editor | SlideShow record)
     # -----------------------------------------------------------------------
-    def _toggle_ss_review(self):
-        if self._ss_review_frame is not None:
-            self._exit_ss_review()
-        else:
-            self._enter_ss_review()
-
     def _enter_ss_review(self):
-        # Where to read is a setting, changeable in the Settings window: a
-        # folder, or particular logs.  It is also asked for here when it is
-        # unset or no longer any good -- but only written once it has actually
-        # yielded records, so a wrong pick never becomes the remembered one.
-        source = _ss_review_source()
-        while True:
-            if not _ss_logs_in(source):
-                source = _pick_folder_by_its_files(
-                    self.root, f"Select any {SS_LOG_GLOB} file in the folder",
-                    SS_LOG_GLOB, source if isinstance(source, str) else "")
-                if not source:
-                    return
-            records = _collect_ss_records(source)
-            if records:
-                break
-            if not messagebox.askyesno(
-                    "Review SS Comments",
-                    "No unreviewed SlideShow records found in\n"
-                    f"{_ss_source_label(source)}\n\n"
-                    "Select a different folder?",
-                    parent=self.root):
-                return
-            source = ""     # forces the folder dialog on the next pass
-        if source != _ss_review_source():
-            _store.set_op_param(SS_REVIEW_DIR_KEY, source)
+        """Show the Review tab.
+
+        It always opens, even with nothing to review: a tab that refused to
+        appear would leave the strip pointing at a mode the window is not in.
+        Where to read comes from the settings and is not asked for here -- an
+        empty queue says where it looked and to change it in Settings.
+        """
         # Remembered, because the reports being reviewed are the ones these
         # logs held: marking them done must go back to where they came from
         # even if the setting is changed while the review is open.
-        self._ss_source = source
+        self._ss_source = _ss_review_source()
+        records = _collect_ss_records(self._ss_source)
 
         # The editor's widgets are about to be rebuilt inside the review panel,
-        # so an open editor dialog must be closed (and its edits dealt with) first.
+        # so an open editor dialog must be closed first.  Anything unsaved in
+        # it has already been asked about, by the guard on the tab switch.
         if self._editor_dlg is not None and self._editor_dlg.winfo_exists():
-            self._save_current_custom_fields()
-            if not self._confirm_discard_edits(parent=self._editor_dlg):
-                return
             self._state["editor_geometry"] = self._editor_dlg.geometry()
             self._editor_dlg.grab_release()
             self._editor_dlg.destroy()
@@ -2900,8 +2986,6 @@ class PhotosEditor:
         self._ss_group_index = 0
 
         self._main_pane.pack_forget()
-        self._zoom_btn.config(state="disabled")
-        self._ss_review_btn.config(text="Exit Review")
 
         pane = ttk.PanedWindow(self.root, orient="horizontal")
         pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
@@ -2928,11 +3012,30 @@ class PhotosEditor:
         self.root.bind("<Left>",  self._ss_arrow_step)
         self.root.bind("<Right>", self._ss_arrow_step)
 
-        self._show_ss_photo()
+        if self._ss_groups:
+            self._show_ss_photo()
+        else:
+            self._ss_show_empty()
+
+    def _ss_show_empty(self):
+        """Nothing to review: say so, and where it looked.
+
+        The queue being empty is the ordinary end of a review as well as the
+        state of a wrongly-set folder, so this has to read as both.
+        """
+        self._ss_album_var.set("")
+        self._ss_count_var.set("No photos in the queue")
+        self._ss_build_matrix([], [])
+        where = _ss_source_label(self._ss_source) or "nowhere yet"
+        # _ss_photo_unavailable sets the status line from what it is given
+        self._ss_photo_unavailable(
+            "Nothing to review",
+            f"No unreviewed SlideShow reports were found in\n{where}.",
+            "Settings… is where to say which folder, or which files, to read.")
 
     def _exit_ss_review(self):
-        if not self._ss_confirm_discard():
-            return
+        """Leave the Review tab.  Anything unsaved has already been asked
+        about by the guard on the tab switch."""
         self._ss_load_gen += 1              # invalidate any in-flight record load
         self._ss_face_hl_ids = []
         self._ss_set_busy(False)            # while the canvas is still there
@@ -2959,8 +3062,6 @@ class PhotosEditor:
             self.root.unbind(seq)
         self.root.bind("<Control-z>", self._on_ctrl_z)   # back to drag-drop undo
 
-        self._zoom_btn.config(state="normal")
-        self._ss_review_btn.config(text="Review SS Comments")
         self._main_pane.pack(side="top", fill="both", expand=True, padx=4, pady=4)
 
     # True if it is OK to leave the current record (asking about unsaved edits)
@@ -3331,13 +3432,17 @@ class PhotosEditor:
                          args=(self._ss_rows, int(pid), self._ss_load_gen),
                          daemon=True).start()
 
-    def _ss_photo_unavailable(self, heading: str, why: str):
+    _SS_STILL_READABLE = ("The reports beside it are still readable.  Use "
+                          "Reject Reports to clear them and move on.")
+
+    def _ss_photo_unavailable(self, heading: str, why: str, advice: str = ""):
         """Say on the photo side that there is no photo to show, and why.
 
         The reports still stand -- they are read from the log, not the server
         -- so the review is usable; what must not happen is the pane sitting at
         "Loading…" as though it were still trying, which reads as a hang rather
-        than as an answer.
+        than as an answer.  An empty queue has nothing beside it to read, so it
+        passes advice of its own.
         """
         self._ss_set_busy(False)
         self.photo_label_var.set(heading)
@@ -3350,9 +3455,7 @@ class PhotosEditor:
                 width // 2, height // 2, fill="#c0c0c0", justify="center",
                 font=("TkDefaultFont", 11),
                 width=max(width - 40, 100),
-                text=f"{heading}\n\n{why}\n\n"
-                     "The reports beside it are still readable.  Use Reject "
-                     "Reports to clear them and move on.")
+                text=f"{heading}\n\n{why}\n\n{advice or self._SS_STILL_READABLE}")
         except tk.TclError:
             pass                        # the canvas has gone with the mode
 
@@ -5907,13 +6010,15 @@ class PhotosEditor:
         always does.  Refusing that keeps the review that is running, and the
         new choice waits for the next one.
         """
-        if self._ss_review_frame is None:
+        if self._mode != MODE_REVIEW:
             return                      # the next review reads the setting anyway
-        self._exit_ss_review()
-        if self._ss_review_frame is not None:
+        # Leaving the Review tab asks about unsaved edits, but this is not a
+        # tab switch: nothing has asked yet, so ask here.
+        if not self._ss_confirm_discard():
             self.set_status("Settings saved — the new reports will come up the "
-                            "next time you enter Review SS Comments.")
+                            "next time you enter Review.")
             return
+        self._exit_ss_review()
         self._enter_ss_review()
 
     def _offer_restart(self, settings: list):

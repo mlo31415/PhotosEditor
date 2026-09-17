@@ -100,7 +100,7 @@ def labels():
 
 
 def run():
-    app._enter_ss_review(); root.update()
+    app._show_mode(pe.MODE_REVIEW); root.update()
     first = app._ss_group[0]["photo id"]
     print(f"reviewing {len(app._ss_groups)} photos, this one is {first}")
     check("the button says Reject Reports", "Reject Reports" in labels(),
