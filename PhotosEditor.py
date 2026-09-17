@@ -2941,9 +2941,15 @@ class PhotosEditor:
         self._ss_source = ""
         # Reset editor state that pointed into the destroyed widgets; the next
         # thumbnail double-click rebuilds the editor in its normal dialog.
+        # custom_vars among them: it holds the field widgets themselves, and
+        # asking a destroyed one for its text raises -- which, on the way out
+        # of a callback like Exit, stops the quit and says nothing.  The fields
+        # have already been saved and asked about by _ss_confirm_discard above.
         self._viewer_image       = None
         self._viewer_tk          = None
         self._current_image_dict = None
+        self.custom_vars         = {}
+        self._loaded_fields      = {}
         self._edit_history.clear()
         self._photo_edited = False
 
