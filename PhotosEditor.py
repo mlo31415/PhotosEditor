@@ -1354,6 +1354,7 @@ class PhotosEditor:
 
         # ── Review SS Comments mode state ───────────────────────────────────
         self._ss_review_frame: "ttk.PanedWindow | None" = None  # split screen when active
+        self._ss_dir:          str  = ""    # the folder the reports on screen came from
         self._ss_groups:       list = []    # unreviewed records, one list per photo
         self._ss_group_index:  int  = 0
         self._ss_rows:         list = []    # faces of the photo under review
@@ -2800,6 +2801,10 @@ class PhotosEditor:
             d = ""      # forces the folder dialog on the next pass
         if d != _ss_review_dir():
             _store.set_op_param(SS_REVIEW_DIR_KEY, d)
+        # Remembered, because the reports being reviewed are these ones from
+        # this folder: marking them done must go back to the folder they came
+        # out of even if the setting is changed while the review is open.
+        self._ss_dir = d
 
         # The editor's widgets are about to be rebuilt inside the review panel,
         # so an open editor dialog must be closed (and its edits dealt with) first.
@@ -2856,6 +2861,7 @@ class PhotosEditor:
         self._ss_set_busy(False)            # while the canvas is still there
         self._ss_review_frame.destroy()     # takes the embedded editor widgets with it
         self._ss_review_frame = None
+        self._ss_dir = ""
         # Reset editor state that pointed into the destroyed widgets; the next
         # thumbnail double-click rebuilds the editor in its normal dialog.
         self._viewer_image       = None
@@ -3523,7 +3529,10 @@ class PhotosEditor:
         Returns (all_marked, completed_log).  A record that cannot be found is
         reported and left alone rather than being dropped silently.
         """
-        review_dir = _ss_review_dir()
+        # The folder these reports were read from, which is not necessarily the
+        # setting any more: changing the setting reloads the review, but a
+        # reload refused over unsaved edits leaves these ones still on screen.
+        review_dir = self._ss_dir
         # An unset folder would make this Path(""), the working directory, where
         # the record certainly is not -- say so rather than searching the wrong place
         if not review_dir or not Path(review_dir).is_dir():
@@ -5752,6 +5761,26 @@ class PhotosEditor:
         if chosen:
             var.set(str(Path(chosen).resolve()))
 
+    def _ss_reload_for_new_folder(self):
+        """Apply a changed SlideShow folder to a review that is already open.
+
+        Every other setting is read from the file where it is used, so saving
+        is all it takes.  This one is read once, as a review begins: the
+        reports on screen came out of the folder that is no longer the setting,
+        so applying the change means putting the new folder's reports in their
+        place -- a fresh review, which asks about unsaved edits the way leaving
+        one always does.  Refusing that keeps the review that is running, and
+        the new folder waits for the next one.
+        """
+        if self._ss_review_frame is None:
+            return                      # the next review reads the setting anyway
+        self._exit_ss_review()
+        if self._ss_review_frame is not None:
+            self.set_status("Settings saved — the new folder's reports will come "
+                            "up the next time you enter Review SS Comments.")
+            return
+        self._enter_ss_review()
+
     def _offer_restart(self, settings: list):
         """A saved setting cannot take effect until the program restarts.
 
@@ -5946,7 +5975,11 @@ class PhotosEditor:
                             f"{'s' if len(removed) != 1 else ''} removed")
             self.set_status("Settings saved" + (": " + "; ".join(said) if said else "."))
             # Everything is read from the file where it is used, so a change is
-            # already in force.  Only a setting marked otherwise needs more.
+            # already in force -- except in a review already under way, which
+            # read the folder as it began and is showing the old one's reports.
+            if any(s.key == SS_REVIEW_DIR_KEY for s in changed):
+                self._ss_reload_for_new_folder()
+            # Only a setting marked otherwise needs more.
             restart_for = [s.label for s in changed if s.restart_needed]
             if restart_for:
                 self._offer_restart(restart_for)
