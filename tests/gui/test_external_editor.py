@@ -21,7 +21,7 @@ from tkinter import ttk
 from PIL import Image, ImageStat
 from CredentialStore import CredentialStore
 
-errors, asked = [], []
+errors, asked, notes = [], [], []
 tk.Tk.report_callback_exception = lambda self, e, v, t: (
     errors.append("".join(traceback.format_exception(e, v, t))),
     print("!!", errors[-1], flush=True))
@@ -52,6 +52,9 @@ TOOL.write_text(
     "    Image.new('RGB', img.size, (20, 60, 200)).save(path)\n"
     "if what != 'handoff':\n"
     "    time.sleep(30)\n", encoding="utf-8")
+
+# Folders left by earlier runs are not this run's business
+BEFORE = {q.name for q in Path(tempfile.gettempdir()).glob("PE-edit-*")}
 
 ORIGINAL_COLOUR = (200, 60, 20)
 PAINTED_COLOUR = (20, 60, 200)
@@ -88,12 +91,48 @@ def stand_in(mode):
     return [sys.executable, str(TOOL), mode]
 
 
-def waiting_dialog():
+def find_dialog(fragment):
     for w in root.winfo_children():
         if isinstance(w, tk.Toplevel) and w.winfo_exists() \
-                and "Editing in" in str(w.title()):
+                and fragment in str(w.title()):
             return w
     return None
+
+
+def waiting_dialog():
+    return find_dialog("Editing in")
+
+
+def words_in(widget):
+    """Everything a dialog says, so the wording can be checked."""
+    out = []
+
+    def walk(w):
+        try:
+            text = str(w.cget("text"))
+            if text:
+                out.append(text)
+        except Exception:
+            pass
+        for c in w.winfo_children():
+            walk(c)
+    walk(widget)
+    return " | ".join(out)
+
+
+def tick(dlg, fragment):
+    """Tick the checkbox whose label contains fragment."""
+    def walk(w):
+        if isinstance(w, ttk.Checkbutton) and fragment in str(w.cget("text")):
+            return w
+        for c in w.winfo_children():
+            got = walk(c)
+            if got:
+                return got
+    box = walk(dlg)
+    if box is not None:
+        box.invoke()
+    return box is not None
 
 
 def press(dlg, text):
@@ -131,12 +170,65 @@ def finish_round(button, after):
         failures.append(f"no {button} button on the waiting dialog")
         root.destroy()
         return
+    # Pressing Done can raise the note that follows, which is modal in its
+    # turn, so the next step waits behind it
+    root.after(300, lambda: dismiss_note(after))
     btn.invoke()
+
+
+def dismiss_note(after):
+    note = find_dialog("Changes Brought Back")
+    if note is not None:
+        notes.append(words_in(note))
+        tick(note, "hide this message")
+        press(note, "OK").invoke()
     root.after(400, after)
 
 
+def step_reminder():
+    print("the reminder before opening says what to do, in this tool's terms:")
+    load_photo()
+    real_popen = pe.subprocess.Popen
+    pe.subprocess.Popen = lambda argv, *a, **k: real_popen(
+        stand_in("look") + [argv[1]], *a, **k)
+    root.after(600, check_reminder)
+    try:
+        app._run_external_edit(str(TOOL))
+    finally:
+        pe.subprocess.Popen = real_popen
+
+
+def check_reminder():
+    dlg = find_dialog("Opening")
+    check("the reminder appeared before anything opened", dlg is not None)
+    if dlg is None:
+        root.destroy(); return
+    said = words_in(dlg)
+    check("it names the photo", "Chicon 1962" in said, said[:90])
+    check("it says what to do when finished", "When you have finished" in said)
+    check("with the general rule, this tool being no one PE knows",
+          "where it is" in said, said[:200])
+    check("and offers to be hidden", tick(dlg, "hide this message"))
+    press(dlg, "Continue").invoke()
+    root.after(1200, after_reminder)
+
+
+def after_reminder():
+    check("the hiding was remembered in the state file",
+          app._state.get(pe.HINT_BEFORE_KEY) is True,
+          app._state.get(pe.HINT_BEFORE_KEY))
+    dlg = waiting_dialog()
+    check("and then the tool opened and PE waited", dlg is not None)
+    if dlg is not None:
+        said = words_in(dlg)
+        check("the wait says nothing about processes",
+              "running" not in said.lower(), said[:160])
+        press(dlg, "Cancel").invoke()
+    root.after(400, step_saved)
+
+
 def step_saved():
-    print("the other program saves, and the changes come back:")
+    print("\nthe other program saves, and the changes come back:")
     drive("paint", "Done", step_saved_checked)
 
 
@@ -149,6 +241,12 @@ def step_saved_checked():
     app._undo_edit(); root.update()
     check("and undo puts the original back", colour_now() == ORIGINAL_COLOUR,
           colour_now())
+    check("the note afterwards explained what is left to do",
+          notes and "Upload" in notes[0] and "Ctrl+Z" in notes[0],
+          notes[0][:120] if notes else "no note appeared")
+    check("and it too was hidden when asked",
+          app._state.get(pe.HINT_AFTER_KEY) is True,
+          app._state.get(pe.HINT_AFTER_KEY))
     root.after(300, step_not_saved)
 
 
@@ -205,18 +303,24 @@ def check_handoff():
 
 def done():
     root.update()
+    # The handed-over file is taken away once the other program lets go of it,
+    # which is not always at the first attempt
+    root.after(9000, check_cleanup)
+
+
+def check_cleanup():
+    left = [q.name for q in Path(tempfile.gettempdir()).glob("PE-edit-*")
+            if q.name not in BEFORE]
+    check("the handed-over files were cleaned up", not left, left)
     check("the tool was remembered as the last one used",
           pe._store.load_op_params().get(pe.EXTERNAL_EDITOR_LAST) == str(TOOL),
           pe._store.load_op_params().get(pe.EXTERNAL_EDITOR_LAST))
-    check("nothing was left in the temp folder",
-          not list(Path(tempfile.gettempdir()).glob("PE-edit-*")),
-          [p.name for p in Path(tempfile.gettempdir()).glob("PE-edit-*")])
     if errors:
         failures.append("an exception escaped")
     root.destroy()
 
 
-root.after(500, step_saved)
+root.after(500, step_reminder)
 root.after(60000, lambda: (failures.append("never finished"), root.destroy()))
 root.mainloop()
 shutil.rmtree(tmp, ignore_errors=True)

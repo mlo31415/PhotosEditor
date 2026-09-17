@@ -1030,6 +1030,38 @@ _EDITOR_SEARCH = (
 )
 # Executables whose own name says nothing about the program
 _EDITOR_NAMES = {"i_view64": "IrfanView", "i_view32": "IrfanView"}
+
+# Whatever Windows opens a .png with -- usually Photos, which has no .exe to
+# point at and so cannot be added to the list like an ordinary program.
+WINDOWS_DEFAULT = "*windows default*"
+
+# Whether the reminder before opening, and the note afterwards, have been
+# turned off.  In the state file: they are one user's habit, not a setting.
+HINT_BEFORE_KEY = "external_edit_hint_hidden"
+HINT_AFTER_KEY  = "external_edit_done_hidden"
+
+# What to tell someone before they start, per tool.  The whole point is the
+# file coming back, and every one of these is really the same instruction:
+# save over what you were given.
+_EDITOR_STEPS = {
+    "irfanview":
+        "Make your changes, then press Ctrl+S (File ▸ Save) and say Yes "
+        "to overwriting the file.",
+    "photoshop":
+        "Make your changes, then File ▸ Save (Ctrl+S), keeping the PNG "
+        "format if you are asked.\n\nIf you have added layers, use "
+        "Layer ▸ Flatten Image first: PNG cannot hold layers.",
+    "windows default":
+        "Choose Edit image, make your changes, then Save — not Save as "
+        "copy, which would leave the file here untouched.",
+}
+_EDITOR_STEPS_GENERIC = ("Save the file where it is, under the name it already "
+                         "has.  A copy saved somewhere else will not come back.")
+
+
+def _editor_instructions(path: str) -> str:
+    """How to finish, in the words of the program being used."""
+    return _EDITOR_STEPS.get(_editor_label(path).lower(), _EDITOR_STEPS_GENERIC)
 # Builds to leave out of the list unless they are the only one installed
 _EDITOR_SIDELINE = ("beta", "preview", "prerelease", "(test)")
 
@@ -1070,6 +1102,8 @@ def _discover_external_editors() -> list:
 def _editor_label(path: str) -> str:
     """What to call a tool in the list: its own name, unless that is a name
     only its installer could love."""
+    if path == WINDOWS_DEFAULT:
+        return "Windows default"
     stem = Path(path).stem
     return _EDITOR_NAMES.get(stem.lower(), stem)
 
@@ -5140,9 +5174,22 @@ class PhotosEditor:
         _store.set_op_param(EXTERNAL_EDITORS_KEY, list(tools))
 
     def _last_external_editor(self) -> str:
-        """The tool used last, if it is still both listed and installed."""
+        """The tool used last, if it is still there to be used."""
         last = str(_store.load_op_params().get(EXTERNAL_EDITOR_LAST, "") or "")
+        if last == WINDOWS_DEFAULT:
+            return last                     # always available; nothing to find
         return last if last and os.path.isfile(last) else ""
+
+    def _remember_state(self, key: str, value):
+        """Keep something small in the state file now rather than at exit: a
+        box ticked to stop a message should stay ticked even if the program
+        does not close tidily."""
+        self._state[key] = value
+        try:
+            self._capture_window_state(self._state)
+            _save_state(self._state)
+        except Exception as e:
+            logger.warning(f"Could not save {key}: {e}")
 
     def _open_in_irfanview(self):
         """Ctrl+I: straight to the tool used last, or the list if there is
@@ -5165,7 +5212,9 @@ class PhotosEditor:
         if self._viewer_image is None:
             self.set_status("No photo to edit.")
             return
-        tools = self._external_editors()
+        # Windows' own choice is always on offer and is not the user's to
+        # remove: there is no path to keep, only the file association.
+        tools = [WINDOWS_DEFAULT] + self._external_editors()
 
         dlg = tk.Toplevel(self.root)
         dlg.title("External Image Editor")
@@ -5186,6 +5235,10 @@ class PhotosEditor:
         def refill(select=0):
             listbox.delete(0, "end")
             for path in tools:
+                if path == WINDOWS_DEFAULT:
+                    listbox.insert("end", "Windows default      "
+                                          "whatever Windows opens a .png with")
+                    continue
                 gone = "" if os.path.isfile(path) else "   (not found)"
                 listbox.insert("end", f"{_editor_label(path)}{gone}      {path}")
             if tools:
@@ -5211,7 +5264,7 @@ class PhotosEditor:
             path = str(Path(path).resolve())
             if path not in tools:
                 tools.append(path)
-                self._save_external_editors(tools)
+                self._save_external_editors(tools[1:])   # not Windows' own
             refill(tools.index(path))
             open_it()
 
@@ -5219,12 +5272,27 @@ class PhotosEditor:
             path = chosen()
             if not path:
                 return
+            if path == WINDOWS_DEFAULT:
+                messagebox.showinfo(
+                    "Always Available",
+                    "Windows' own choice of program is not something "
+                    "PhotosEditor keeps, so there is nothing to remove.",
+                    parent=dlg)
+                return
             where = tools.index(path)
             tools.remove(path)
-            self._save_external_editors(tools)
+            self._save_external_editors(tools[1:])
             refill(max(where - 1, 0))
 
         listbox.bind("<Double-Button-1>", open_it)
+
+        # The way back, for anyone who has turned the reminder off
+        remind = tk.BooleanVar(value=not self._state.get(HINT_BEFORE_KEY, False))
+        ttk.Checkbutton(
+            body, variable=remind, text="Show the reminder before opening",
+            command=lambda: self._remember_state(HINT_BEFORE_KEY,
+                                                 not remind.get())).pack(anchor="w")
+
         buttons = ttk.Frame(dlg, padding=(14, 0, 14, 12))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(side="right")
@@ -5251,11 +5319,13 @@ class PhotosEditor:
         """
         if self._viewer_image is None:
             return
-        if not os.path.isfile(exe):
+        if exe != WINDOWS_DEFAULT and not os.path.isfile(exe):
             messagebox.showerror(
                 "Editor Not Found",
                 f"{_editor_label(exe)} is no longer at\n{exe}\n\n"
                 "Use Remove in the list to take it out.", parent=self.root)
+            return
+        if not self._external_edit_reminder(exe):
             return
 
         folder = Path(tempfile.mkdtemp(prefix="PE-edit-"))
@@ -5272,7 +5342,13 @@ class PhotosEditor:
 
         before = _file_fingerprint(handed_over)
         try:
-            process = subprocess.Popen([exe, str(handed_over)])
+            if exe == WINDOWS_DEFAULT:
+                # Windows picks the program and tells us nothing about it, so
+                # there is no process to watch -- the Done button is all there is
+                os.startfile(str(handed_over))
+                process = None
+            else:
+                process = subprocess.Popen([exe, str(handed_over)])
         except Exception as e:
             shutil.rmtree(folder, ignore_errors=True)
             messagebox.showerror("Could Not Start",
@@ -5287,7 +5363,128 @@ class PhotosEditor:
         finally:
             # Nothing is kept: the copy that matters is the one Photo Backups
             # takes when the edit is uploaded.
-            shutil.rmtree(folder, ignore_errors=True)
+            self._forget_edit_folder(folder)
+
+    def _forget_edit_folder(self, folder: "Path", tries: int = 0):
+        """Take the handed-over file away again.
+
+        Not always at the first attempt: pressing Done does not close the other
+        program, and Windows will not delete a file it still has open.  So this
+        comes back a few times before giving up, rather than leaving a
+        PE-edit-... folder in the temp directory for good.
+        """
+        if not folder.exists():
+            return
+        try:
+            shutil.rmtree(folder)
+            return
+        except OSError:
+            pass
+        if tries < 10:
+            self.root.after(3000, lambda: self._forget_edit_folder(folder, tries + 1))
+        else:
+            logger.warning(f"Could not remove {folder}: something still has it open")
+
+    def _external_edit_reminder(self, exe: str) -> bool:
+        """Say what is about to happen, and what to do to finish.
+
+        True to go ahead.  The whole round trip turns on saving over the file
+        that is handed across, and that is not obvious from inside the other
+        program -- so it is said once, beforehand, until the user says they
+        have it.
+        """
+        if self._state.get(HINT_BEFORE_KEY, False):
+            return True
+        name = _editor_label(exe)
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Opening {name}")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, font=("TkDefaultFont", 10, "bold"), wraplength=430,
+                  justify="left",
+                  text=f'{name} is about to open, so that you can edit '
+                       f'"{self._photo_label()}".').pack(anchor="w")
+        ttk.Label(body, text="When you have finished:", foreground="#555555"
+                  ).pack(anchor="w", pady=(10, 2))
+        ttk.Label(body, wraplength=430, justify="left",
+                  text=_editor_instructions(exe)).pack(anchor="w", padx=(12, 0))
+        ttk.Label(body, foreground="gray", font=("TkDefaultFont", 8),
+                  wraplength=430, justify="left",
+                  text="PhotosEditor waits while you work, and asks you when "
+                       "you are done.").pack(anchor="w", pady=(10, 0))
+
+        hide = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, variable=hide,
+                        text="Check here to hide this message").pack(
+                            anchor="w", pady=(10, 0))
+
+        going = {"on": False}
+
+        def go():
+            going["on"] = True
+            if hide.get():
+                self._remember_state(HINT_BEFORE_KEY, True)
+            dlg.destroy()
+
+        buttons = ttk.Frame(dlg, padding=(16, 4, 16, 14))
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Cancel", command=dlg.destroy).pack(side="right")
+        go_btn = ttk.Button(buttons, text="Continue", command=go)
+        go_btn.pack(side="right", padx=(0, 8))
+        go_btn.focus_set()
+        dlg.bind("<Return>", lambda e: go())
+        self._centre_on_main(dlg)
+        dlg.wait_window()
+        return going["on"]
+
+    def _external_edit_finished(self, exe: str):
+        """What happened, and what is left to do about it."""
+        if self._state.get(HINT_AFTER_KEY, False):
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Changes Brought Back")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        body = ttk.Frame(dlg, padding=(16, 14, 16, 8))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, font=("TkDefaultFont", 10, "bold"), wraplength=430,
+                  justify="left",
+                  text="The photo here is now the one you saved in "
+                       f"{_editor_label(exe)}.").pack(anchor="w")
+        ttk.Label(body, wraplength=430, justify="left", foreground="#555555",
+                  text="Nothing has gone to Piwigo yet — press Upload when "
+                       "you are ready.\n\nCtrl+Z puts the earlier photo back, "
+                       "and a copy of what is on Piwigo is kept in Photo "
+                       "Backups when you do upload.").pack(anchor="w", pady=(8, 0))
+
+        hide = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, variable=hide,
+                        text="Check here to hide this message").pack(
+                            anchor="w", pady=(10, 0))
+
+        def close():
+            if hide.get():
+                self._remember_state(HINT_AFTER_KEY, True)
+            dlg.destroy()
+
+        buttons = ttk.Frame(dlg, padding=(16, 4, 16, 14))
+        buttons.pack(fill="x")
+        ok = ttk.Button(buttons, text="OK", command=close)
+        ok.pack(side="right")
+        ok.focus_set()
+        dlg.bind("<Return>", lambda e: close())
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        self._centre_on_main(dlg)
+        dlg.wait_window()
+
+    def _centre_on_main(self, dlg: tk.Toplevel):
+        dlg.update_idletasks()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        dlg.geometry(f"+{rx + (rw - dlg.winfo_reqwidth())//2}"
+                     f"+{max(ry + (rh - dlg.winfo_reqheight())//2, 0)}")
 
     def _wait_for_external_edit(self, exe: str, path: "Path", before: tuple,
                                 process) -> bool:
@@ -5295,11 +5492,15 @@ class PhotosEditor:
 
         True if the changes are to be brought back.
 
-        The process ending is not by itself the end of the editing: a good many
-        Windows editors hand the file to a copy of themselves that is already
-        running and exit at once, which would otherwise look like "closed
-        without saving" a second after opening.  So the button is what settles
-        it, and an exit only settles it when the file was saved as well.
+        Nothing here mentions the program's process, and that is deliberate.
+        A good many Windows editors hand the file to a copy of themselves that
+        is already running and exit at once, so PhotosEditor watching the
+        process it launched would announce "Photoshop is no longer running"
+        while Photoshop sat there with the photo open.  What can honestly be
+        reported is the file: saved, or not saved yet.
+
+        The button is what settles it; an exit only settles it when the file
+        was saved as well.
         """
         name = _editor_label(exe)
         dlg = tk.Toplevel(self.root)
@@ -5315,12 +5516,16 @@ class PhotosEditor:
         state_var = tk.StringVar(value="Nothing saved yet.")
         ttk.Label(body, textvariable=state_var, foreground="gray").pack(
             anchor="w", pady=(6, 0))
+        ttk.Label(body, text="When you have finished:", foreground="#555555"
+                  ).pack(anchor="w", pady=(10, 2))
+        ttk.Label(body, wraplength=420, justify="left",
+                  text=_editor_instructions(exe)).pack(anchor="w", padx=(12, 0))
         ttk.Label(body, wraplength=420, justify="left", foreground="#555555",
                   font=("TkDefaultFont", 8),
-                  text="Save in the other program and press Done, and the photo "
-                       "here is replaced by what you saved.  Saving under a "
-                       "different name is not seen -- it is this file that comes "
-                       "back.").pack(anchor="w", pady=(8, 0))
+                  text="Then press Done, and the photo here is replaced by what "
+                       "you saved.  Saving under a different name is not seen "
+                       "— it is this file that comes back.").pack(
+                           anchor="w", pady=(8, 0))
 
         answer = {"bring_back": False}
 
@@ -5355,20 +5560,15 @@ class PhotosEditor:
             if not dlg.winfo_exists():
                 return
             if saved_now():
-                state_var.set("Saved — press Done to bring the changes back.")
-                if process.poll() is not None:
-                    done()                  # saved, and the editor has closed
+                state_var.set(f"Saved at {datetime.now():%H:%M} — press Done to "
+                              "bring the changes back.")
+                # An editor that saved and then closed has plainly finished
+                if process is not None and process.poll() is not None:
+                    done()
                     return
-            elif process.poll() is not None:
-                state_var.set(f"{name} is no longer running, and nothing has "
-                              "been saved.")
             dlg.after(500, watch)
 
-        dlg.update_idletasks()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        rw, rh = self.root.winfo_width(), self.root.winfo_height()
-        dlg.geometry(f"+{rx + (rw - dlg.winfo_reqwidth())//2}"
-                     f"+{max(ry + (rh - dlg.winfo_reqheight())//2, 0)}")
+        self._centre_on_main(dlg)
         watch()
         dlg.wait_window()
         return answer["bring_back"]
@@ -5399,6 +5599,7 @@ class PhotosEditor:
                    else f" — now {edited.width} × {edited.height}")
         self.set_status(f"Edited in {_editor_label(exe)}{resized}.  "
                         "Upload to put it on Piwigo.")
+        self._external_edit_finished(exe)
 
     @staticmethod
     def _fit_within_pixels(w: int, h: int, max_pixels: int) -> tuple:

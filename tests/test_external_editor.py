@@ -116,6 +116,52 @@ class NamingTheTools(unittest.TestCase):
         self.assertEqual(pe._editor_label(r"C:\x\I_VIEW64.EXE"), "IrfanView")
 
 
+class TellingPeopleWhatToDo(unittest.TestCase):
+    """The round trip turns on saving over the file that was handed across,
+    which is not obvious from inside the other program."""
+
+    def steps(self, path):
+        return pe._editor_instructions(path)
+
+    def test_irfanview_is_told_how_irfanview_does_it(self):
+        got = self.steps(r"C:\Program Files\IrfanView\i_view64.exe")
+        self.assertIn("Ctrl+S", got)
+        self.assertIn("overwriting", got)
+
+    def test_photoshop_is_warned_about_layers(self):
+        """PNG cannot hold them, and that is where a save quietly turns into a
+        .psd somewhere else."""
+        got = self.steps(r"C:\Program Files\Adobe\Adobe Photoshop 2026\Photoshop.exe")
+        self.assertIn("Flatten", got)
+        self.assertIn("PNG", got)
+
+    def test_the_windows_default_is_told_not_to_save_a_copy(self):
+        got = self.steps(pe.WINDOWS_DEFAULT)
+        self.assertIn("Save as copy", got)
+
+    def test_anything_else_gets_the_general_rule(self):
+        got = self.steps(r"C:\Tools\SomeEditor.exe")
+        self.assertIn("where it is", got)
+        self.assertIn("will not come back", got)
+
+    def test_every_tool_is_told_something(self):
+        for path in (pe.WINDOWS_DEFAULT, r"C:\x\i_view64.exe",
+                     r"C:\x\Photoshop.exe", r"C:\x\whatever.exe"):
+            self.assertTrue(self.steps(path).strip(), path)
+
+
+class TheWindowsDefault(unittest.TestCase):
+
+    def test_it_has_a_name_of_its_own(self):
+        self.assertEqual(pe._editor_label(pe.WINDOWS_DEFAULT), "Windows default")
+
+    def test_it_is_not_a_path_that_could_be_mistaken_for_one(self):
+        """It goes in the same list as real programs, so it must not look like
+        a file that has gone missing."""
+        self.assertFalse(os.path.isfile(pe.WINDOWS_DEFAULT))
+        self.assertNotIn("\\", pe.WINDOWS_DEFAULT)
+
+
 class FindingTheTools(unittest.TestCase):
     """_discover_external_editors seeds the list on a machine that has
     something already."""
