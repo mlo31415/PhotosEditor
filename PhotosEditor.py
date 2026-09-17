@@ -1139,8 +1139,10 @@ class ThumbnailPanel:
         self.cell_by_id:   dict = {}   # image_id → tk.Frame
         self.selected_ids: set  = set()
         self.shown_album_id: "int | None" = None
+        self.loading_album_id: "int | None" = None  # the album on its way, if any
         self.load_gen: int = 0                      # incremented to cancel in-flight loads
         self._load_dlg: "tk.Toplevel | None" = None # active progress dialog, if any
+        self._populated: bool = False               # the tree has been filled once
 
         self.frame = ttk.Frame(parent)
         self._build(album_var, count_var, on_tree_select, on_tree_mutation, set_status)
@@ -1168,7 +1170,24 @@ class ThumbnailPanel:
         hpane.add(tree_outer, weight=2)
 
         def _cancel_current_load():
+            """Another album is being picked: stop loading this one.
+
+            Not when the selection lands back on the album already loading or
+            shown.  Rebuilding the tree re-selects it, and that must not throw
+            away photos that are still on their way -- which is a load
+            cancelled and never asked for again, because the album has not
+            actually changed and so nothing starts a new one.
+            """
+            try:
+                sel = self.tree.selection()
+            except Exception:
+                sel = ()
+            here = (self.loading_album_id if self.loading_album_id is not None
+                    else self.shown_album_id)
+            if here is not None and len(sel) == 1 and sel[0] == str(here):
+                return
             self.load_gen += 1
+            self.loading_album_id = None
             if self._load_dlg is not None:
                 try: self._load_dlg.destroy()
                 except Exception: pass
@@ -1219,8 +1238,18 @@ class ThumbnailPanel:
         self.canvas.bind("<ButtonRelease-1>",
                          lambda e: self._on_grid_drop(e, self.side))
 
-        self.frame.bind("<Map>",
-            lambda e: self.root.after(50, self._on_tree_populate), add="+")
+        # Fill the tree once the panel is actually on screen -- but only the
+        # first time.  A panel is mapped again every time a mode puts it back
+        # in the pane, and rebuilding the tree then costs a re-read of the
+        # hierarchy and re-selects the album, which is not free: it looks to
+        # everything downstream like the album being picked again.
+        self.frame.bind("<Map>", self._on_first_map, add="+")
+
+    def _on_first_map(self, _event=None):
+        if self._populated:
+            return
+        self._populated = True
+        self.root.after(50, self._on_tree_populate)
 
     # ── Grid helpers ─────────────────────────────────────────────────────────
 
@@ -2507,6 +2536,7 @@ class PhotosEditor:
                 pass
             panel._load_dlg = None
 
+        panel.loading_album_id = album_id
         panel.clear()
         self._drag_batch.clear()
         count_var.set("")
@@ -2538,6 +2568,7 @@ class PhotosEditor:
             cancel_btn.config(state="disabled")
             count_lbl_var.set("Stopping…")
             panel.load_gen += 1
+            panel.loading_album_id = None
             panel._load_dlg = None
             if dlg_alive[0]:
                 dlg.destroy()
@@ -2575,6 +2606,8 @@ class PhotosEditor:
         def _on_done():
             def _apply():
                 panel._load_dlg = None
+                if panel.load_gen == gen:
+                    panel.loading_album_id = None
                 if dlg_alive[0]:
                     dlg.destroy()
             self.root.after(0, _apply)
