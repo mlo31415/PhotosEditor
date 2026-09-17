@@ -97,9 +97,10 @@ loaded = {}
 realOnPhotoLoaded = pe.PhotosEditor._on_photo_loaded
 
 
-def watched(self, pil, img_dict):
+def watched(self, pil, img_dict, *rest):
+    # *rest: the downloaded bytes go along too, for the backup copy
     loaded["at"] = len(samples)
-    return realOnPhotoLoaded(self, pil, img_dict)
+    return realOnPhotoLoaded(self, pil, img_dict, *rest)
 
 
 pe.PhotosEditor._on_photo_loaded = watched

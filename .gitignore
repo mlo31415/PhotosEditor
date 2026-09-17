@@ -28,4 +28,9 @@ PhotosEditor.docx
 
 # Runtime / per-user state
 PhotosEditor State.json
+
+# Copies of photos kept before they were edited.  They live beside the program
+# because that is where its other files live; they are photographs, they can be
+# large, and they belong to whoever is running it -- not in the repository.
+Photo Backups/
 AlbumHierarchy.json

@@ -1013,6 +1013,40 @@ def _looks_like_temp_upload_name(name: str) -> bool:
     return bool(_TEMP_UPLOAD_NAME.match(name or ""))
 
 
+PHOTO_BACKUP_DIR = "Photo Backups"
+
+
+def _backup_path(folder: Path, filename: str) -> Path:
+    """Where to put the pre-change copy of a photo called filename.
+
+    The photo's own name, and if that is taken, the same name with
+    " - Gen 01" before the extension, then " - Gen 02", and so on.  Nothing
+    is ever overwritten: a photo edited three times leaves three backups, and
+    the plain name is always the first one taken -- the furthest back.
+    """
+    stem, suffix = os.path.splitext(_sanitize_filename(filename))
+    if not suffix:
+        suffix = ".jpg"
+    candidate = folder / f"{stem}{suffix}"
+    generation = 0
+    while candidate.exists():
+        generation += 1
+        candidate = folder / f"{stem} - Gen {generation:02d}{suffix}"
+    return candidate
+
+
+def _write_photo_backup(folder: Path, filename: str, data: bytes) -> Path:
+    """Keep a copy of a photo as it stands, before PhotosEditor changes it.
+
+    The bytes as they were downloaded, not a re-encode of them: a backup that
+    has been through a JPEG encoder is not the photo that was there.
+    """
+    folder.mkdir(parents=True, exist_ok=True)
+    path = _backup_path(folder, filename)
+    path.write_bytes(data)
+    return path
+
+
 def _real_photo_filename(img_dict: dict, image_id) -> str:
     """The name to send this photo back to Piwigo under.
 
@@ -1446,6 +1480,7 @@ class PhotosEditor:
         self.persist_vars:   dict = {}
         self._exif_data:     dict = {}   # kept for field-link machinery
         self._orig_exif:     bytes = b"" # the photo's own EXIF, as downloaded
+        self._orig_bytes:    bytes = b"" # the photo's own file, as downloaded
         self._field_validity = {'date': False, 'caption': False}
 
         # ── tk variables ────────────────────────────────────────────────────
@@ -4912,9 +4947,10 @@ class PhotosEditor:
                     warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
                 resp = requests.get(url, verify=verify, timeout=30)
                 resp.raise_for_status()
-            pil = Image.open(BytesIO(resp.content))
+            original = resp.content
+            pil = Image.open(BytesIO(original))
             pil.load()
-            self.root.after(0, lambda: self._on_photo_loaded(pil, rich_dict))
+            self.root.after(0, lambda: self._on_photo_loaded(pil, rich_dict, original))
         except Exception as e:
             logger.exception(f"Failed to load {url}")
             name = img_dict.get("name") or img_dict.get("file") or "unknown"
@@ -4940,15 +4976,18 @@ class PhotosEditor:
             return
         self._ss_set_busy(False)
 
-    def _on_photo_loaded(self, pil: "Image.Image", img_dict: dict):
+    def _on_photo_loaded(self, pil: "Image.Image", img_dict: dict,
+                         original: bytes = b""):
         """Called on the main thread once the full image has been downloaded."""
         self._photo_load_finished(img_dict)
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
         # Kept now, because it is gone by the time it is needed: rotating,
         # cropping and restoring all return a new image, and none of them
-        # carries the EXIF block along.
+        # carries the EXIF block along.  The bytes go with it, so that a
+        # backup can be the file that was on Piwigo rather than a re-encode.
         self._orig_exif          = pil.info.get("exif", b"")
+        self._orig_bytes         = original
         self._current_image_dict = img_dict
         self._photo_edited       = False
         self._edit_history.clear()
@@ -5171,6 +5210,11 @@ class PhotosEditor:
                     self.set_status("Upload cancelled.")
                     return
         exif_out = self._exif_to_write()
+
+        # About to overwrite the photo on Piwigo, which keeps no earlier copy:
+        # put one aside first, or say why not and let the user decide.
+        if pixels_edited and image_id is not None and not self._back_up_photo(fname):
+            return
 
         # Progress dialog
         set_stage, _advance, close_dlg = self._make_progress_dialog(
@@ -5520,6 +5564,43 @@ class PhotosEditor:
         self._viewer_image = result
         self._photo_edited = True
         self._display_photo()
+
+    def _back_up_photo(self, filename: str) -> bool:
+        """Keep the photo as it is now, before it is replaced on Piwigo.
+
+        Piwigo keeps no earlier version: once the edited pixels are up, what
+        was there is gone.  So a copy goes into "Photo Backups" beside the
+        program's own files first.
+
+        True to go ahead with the upload.  A backup that cannot be written is
+        not a reason to refuse outright -- a full disk should not stop the
+        work -- but it is a reason to ask, because it changes what the upload
+        costs if it turns out to be a mistake.
+        """
+        folder = _SCRIPT_DIR / PHOTO_BACKUP_DIR
+        if not self._orig_bytes:
+            logger.warning(f"No downloaded copy of {filename} is held to back up")
+            return self._upload_without_backup(
+                filename, folder,
+                "the photo as it was downloaded is no longer being held")
+        try:
+            path = _write_photo_backup(folder, filename, self._orig_bytes)
+        except Exception as e:
+            logger.warning(f"Could not back up {filename}: {e}", exc_info=True)
+            return self._upload_without_backup(filename, folder, str(e))
+        logger.info(f"Backed up {filename} to {path}")
+        self.set_status(f'Backed up to "{path.name}" — uploading…')
+        return True
+
+    def _upload_without_backup(self, filename: str, folder: "Path",
+                               why: str) -> bool:
+        """No copy could be kept.  Whether to go ahead is the user's call."""
+        return messagebox.askyesno(
+            "No Backup Could Be Saved",
+            f'A copy of "{filename}" could not be put in\n{folder}\n\n'
+            f"{why}\n\nUploading will replace the photo on Piwigo, which keeps "
+            "no earlier version, so the original would be gone.\n\n"
+            "Upload anyway?", icon="warning", parent=self.root)
 
     def _exif_to_write(self) -> bytes:
         """The photo's own EXIF, ready to go into the edited file.
@@ -6392,6 +6473,7 @@ class PhotosEditor:
         self._loaded_full_size   = True
         self._exif_data          = {}
         self._orig_exif          = b""   # not this photo's, once it has gone
+        self._orig_bytes         = b""
         self.photo_label_var.set("No photo selected")
         self.photo_dim_var.set("")
         self.url_var.set("")
