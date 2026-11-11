@@ -944,7 +944,9 @@ class _Tooltip:
         return False
 
     def _on_enter(self, _event=None):
-        if self._after_id is None:
+        # Already showing means the pointer came from a sibling in the group:
+        # still the same region, so the tooltip already up is the one
+        if self._after_id is None and self._tip is None:
             if self._root:
                 self._after_id = self._root.after(500, self._show)
 
@@ -988,6 +990,9 @@ class _Tooltip:
 
     def _show(self):
         self._after_id = None
+        # Never replace a tooltip without closing it: one that is no longer
+        # held in _tip can never be closed, and stays on the screen
+        self._cancel_and_hide()
         text = self._text_fn()
         if not text:
             return
