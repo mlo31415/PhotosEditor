@@ -950,6 +950,17 @@ class _Tooltip:
             if self._root:
                 self._after_id = self._root.after(500, self._show)
 
+    def _coords_inside_tip(self, wx: int, wy: int) -> bool:
+        """Return True if screen point (wx, wy) falls inside the tooltip window."""
+        if self._tip is None:
+            return False
+        try:
+            x  = self._tip.winfo_rootx()
+            y  = self._tip.winfo_rooty()
+            return x <= wx < x + self._tip.winfo_width() and y <= wy < y + self._tip.winfo_height()
+        except Exception:
+            return False
+
     def _on_leave(self, event=None):
         # Use the Leave event's own coordinates — they reflect where the mouse
         # was at the instant it left, so no async delay is needed.
@@ -957,6 +968,8 @@ class _Tooltip:
             try:
                 if self._coords_inside_group(event.x_root, event.y_root):
                     return   # moved to a sibling widget in the group
+                if self._coords_inside_tip(event.x_root, event.y_root):
+                    return   # moved onto the tooltip, or within it
             except Exception:
                 pass
         self._cancel_and_hide()
@@ -1006,6 +1019,10 @@ class _Tooltip:
         tk.Label(self._tip, text=text, justify="left",
                  background="#ffffe0", relief="solid", borderwidth=1,
                  font=("TkDefaultFont", 9), padx=6, pady=4).pack()
+        # The pointer can come to rest on the tooltip itself.  The group then
+        # sees no Leave when it goes, if it goes from the tooltip straight out
+        # of the group, so the tooltip has to watch for that itself
+        self._tip.bind("<Leave>", self._on_leave)
 
 
 # Python's tempfile names are "tmp" and eight characters from [a-z0-9_].  A

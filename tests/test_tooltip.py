@@ -29,7 +29,8 @@ class _At:
         self.widget = widget
 
 
-class OneRegion(unittest.TestCase):
+class _Group:
+    """A thumbnail cell: picture and name in it, one tooltip over all three."""
 
     def setUp(self):
         self.root = tk.Tk()
@@ -76,6 +77,9 @@ class OneRegion(unittest.TestCase):
         self.tip._on_leave(_At(dst))
         self.hover(dst)
 
+
+class OneRegion(_Group, unittest.TestCase):
+
     def test_moving_within_the_group_keeps_one_tooltip(self):
         self.hover(self.picture)
         self.move(self.picture, self.name)
@@ -106,6 +110,47 @@ class OneRegion(unittest.TestCase):
         self.tip._cancel_and_hide()
         self.root.update()
         self.assertEqual(self.tips_on_screen(), [])
+
+
+class _Point:
+    """A Leave event at a screen point."""
+    def __init__(self, x, y):
+        self.x_root, self.y_root = x, y
+
+
+class OverTheTooltip(_Group, unittest.TestCase):
+    """The pointer goes from the photo onto its tooltip, which lies over it.
+    The photo's Leave sees a point inside the photo and rightly keeps the
+    tooltip; then the pointer goes from the tooltip straight out of the
+    photo, and the photo sees nothing.  The tooltip stayed up for good."""
+
+    def on_the_tooltip(self):
+        """Show the tooltip over the picture and move the pointer onto it."""
+        self.hover(self.picture)
+        tip = self.tips_on_screen()[0]
+        # Where it appears depends on the real pointer: put it over the picture
+        tip.wm_geometry(f"+{self.picture.winfo_rootx() + 100}+{self.picture.winfo_rooty() + 40}")
+        self.root.update()
+        self.tip._on_leave(_Point(tip.winfo_rootx() + 5, tip.winfo_rooty() + 5))
+        self.root.update()
+        self.assertEqual(len(self.tips_on_screen()), 1)
+        return tip
+
+    def leave_tip(self, x, y):
+        """The tooltip window's own Leave, at screen point (x, y)."""
+        self.tips_on_screen()[0].event_generate("<Leave>", rootx=x, rooty=y)
+        self.root.update()
+
+    def test_leaving_the_tooltip_out_of_the_photo_takes_it_away(self):
+        tip = self.on_the_tooltip()
+        self.leave_tip(tip.winfo_rootx() + tip.winfo_width() + 5,
+                       self.root.winfo_rooty() + self.root.winfo_height() + 50)
+        self.assertEqual(self.tips_on_screen(), [])
+
+    def test_leaving_the_tooltip_back_onto_the_photo_keeps_it(self):
+        self.on_the_tooltip()
+        self.leave_tip(self.picture.winfo_rootx() + 5, self.picture.winfo_rooty() + 5)
+        self.assertEqual(len(self.tips_on_screen()), 1)
 
 
 if __name__ == "__main__":
