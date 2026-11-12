@@ -1804,20 +1804,26 @@ class PhotosEditor:
                   anchor="w").pack(side="left", padx=6, pady=2)
 
     # ── The editor: the Edit Photos tab, opened by double-clicking a thumbnail ──
-    def _open_photo_in_editor(self, img_dict: dict):
-        """Show a photo in the editor, going to Edit Photos to do it.
+    def _open_photo_in_editor(self, img_dict: dict) -> bool:
+        """Show a photo in the editor, going to Edit Photos to do it.  False
+        if the user chose to stay with the photo they have.
 
         There is one editor and it lives in a tab, so a double-click in Move
         and Copy Photos goes there rather than opening a window of its own.
         """
         if self._mode != MODE_EDIT:
             if not self._may_leave_mode(MODE_EDIT):
-                return
+                return False
             self._show_mode(MODE_EDIT)
         else:
             self._save_current_custom_fields()  # preserve edits before wipe
+            # One click in Edit Photos opens a photo, so one click must not
+            # silently throw away the edits to the photo already there
+            if not self._confirm_discard_edits(action="Open another photo"):
+                return False
             self._clear_editor()   # wipe previous image before new one loads
         self._on_thumb_click(img_dict)
+        return True
 
     def _close_editor(self):
         """The editor's Close button: done with this photo, back to the album.
@@ -4165,8 +4171,22 @@ class PhotosEditor:
             self._execute_drop(event)
         elif self._double_click_pending:
             self._double_click_pending = False   # swallow the spurious 2nd release
+        elif self._mode == MODE_EDIT and side == 'left':
+            self._edit_clicked_photo(img_dict, cell)
         else:
             self._toggle_side_selection(img_dict.get("id"), cell, side)
+
+    def _edit_clicked_photo(self, img_dict: dict, cell: tk.Frame):
+        """Edit Photos: a click puts the photo in the editor, and the photo in
+        the editor is the one photo selected -- clicks do not add up."""
+        image_id = img_dict.get("id")
+        shown = self._current_image_dict
+        if shown is None or shown.get("id") != image_id:
+            if not self._open_photo_in_editor(img_dict):
+                return                          # stayed with the photo it has
+        self._clear_side_selection('left')
+        self._source_panel.selected_ids.add(image_id)
+        self._apply_cell_bg(cell, selected=True)
 
     def _on_cell_double(self, img_dict: dict):
         """Open the photo editor dialog on double-click."""
@@ -4180,7 +4200,9 @@ class PhotosEditor:
         # last real value rather than becoming None, which its type does not allow
         self._drag_batch = []
         self._press_pos = None
-        self._open_photo_in_editor(img_dict)
+        # In Edit Photos the first click of the two has opened it already
+        if self._mode != MODE_EDIT:
+            self._open_photo_in_editor(img_dict)
 
     def _start_drag(self, event, img_dict: dict, side: str):
         self._drag_is_copy = self._ctrl_held
