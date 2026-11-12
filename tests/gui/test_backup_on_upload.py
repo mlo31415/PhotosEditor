@@ -92,6 +92,7 @@ def load_photo():
     # An upload files the photo into the album on screen, and refuses without
     # one -- silently here, since the error box is stubbed out
     app.current_album_id, app.current_album_name = 5, "Fan Photos/Chicon"
+    app._editor_load_id = 77                # as asking for it would have
     app._on_photo_loaded(Image.open(BytesIO(ORIGINAL)),
                          {"id": 77, "file": "Chicon 1962.jpg",
                           "name": "Chicon 1962.jpg", "width": 240, "height": 180},

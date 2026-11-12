@@ -61,7 +61,9 @@ class SlowClient:
     def logout(self): pass
 
     def get_image_info(self, pid):
-        time.sleep(0.6)
+        # Long enough to outlast the window being built: at 0.6 s the fetch
+        # was sometimes over before the test first looked
+        time.sleep(1.5)
         return {"id": pid, "file": f"p{pid}.jpg", "name": f"p{pid}",
                 "width": 400, "height": 300, "categories": [{"id": 77, "name": "A"}],
                 "derivatives": {}, "element_url": None}

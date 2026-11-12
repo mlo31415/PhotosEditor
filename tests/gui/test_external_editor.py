@@ -79,6 +79,7 @@ def colour_now():
 def load_photo():
     app._show_mode(pe.MODE_EDIT)
     root.update()
+    app._editor_load_id = 7                 # as asking for it would have
     app._on_photo_loaded(Image.new("RGB", (120, 90), ORIGINAL_COLOUR),
                          {"id": 7, "file": "Chicon 1962.jpg",
                           "name": "Chicon 1962.jpg", "width": 120, "height": 90},

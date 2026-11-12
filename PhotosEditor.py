@@ -1606,6 +1606,7 @@ class PhotosEditor:
         self._viewer_image:        Image.Image | None = None
         self._viewer_tk:           ImageTk.PhotoImage | None = None
         self._current_image_dict:  dict | None = None
+        self._editor_load_id:      int | None = None   # the photo being fetched for the editor
         self._loaded_fields:       dict = {}   # custom fields as the photo loaded
         self._loaded_full_size:    bool = True # False if only a derivative loaded
         self._caption_editor_open: bool  = False
@@ -5074,6 +5075,11 @@ class PhotosEditor:
         self.photo_dim_var.set("")
         self.url_var.set(url)
         self.set_status(f"Loading \"{name}\"…")
+        # The photo the editor now waits for: any other that lands meanwhile
+        # was asked for earlier, and has been superseded
+        self._editor_load_id = img_dict.get("id")
+        if self._mode != MODE_REVIEW:
+            self._ss_set_busy(True)     # Review put its own on, earlier
         threading.Thread(
             target=self._worker_fetch_full,
             args=(url, img_dict),
@@ -5119,9 +5125,12 @@ class PhotosEditor:
             logger.exception(f"Failed to load {url}")
             name = img_dict.get("name") or img_dict.get("file") or "unknown"
             def _failed(name=name, e=e):
+                if img_dict.get("id") != self._editor_load_id:
+                    return              # superseded: the editor waits for another
                 # Never leave the name stuck at "Loading…", nor the wait cursor
                 # spinning on, when the photo is not going to arrive
                 self._photo_load_finished(img_dict)
+                self._editor_load_id = None
                 self.photo_label_var.set(name)
                 self.set_status(f"Error loading \"{name}\": {e}")
             self.root.after(0, _failed)
@@ -5134,7 +5143,9 @@ class PhotosEditor:
         it must not take the cursor off while the newer one is still fetching.
         """
         if self._mode != MODE_REVIEW:
-            return                              # the cursor was never put on
+            if img_dict.get("id") == self._editor_load_id:
+                self._ss_set_busy(False)
+            return
         group = self._ss_group
         if group and img_dict.get("id") != group[0].get("photo id"):
             return
@@ -5143,7 +5154,12 @@ class PhotosEditor:
     def _on_photo_loaded(self, pil: "Image.Image", img_dict: dict,
                          original: bytes = b""):
         """Called on the main thread once the full image has been downloaded."""
+        # Clicking on to another photo leaves this one's fetch running, and it
+        # can land after the other's: it must not take the editor over
+        if img_dict.get("id") != self._editor_load_id:
+            return
         self._photo_load_finished(img_dict)
+        self._editor_load_id = None
         name = img_dict.get("name") or img_dict.get("file") or "unknown"
         self._viewer_image       = pil
         # Kept now, because it is gone by the time it is needed: rotating,
@@ -7055,6 +7071,7 @@ class PhotosEditor:
         self._viewer_image       = None
         self._viewer_tk          = None
         self._current_image_dict = None
+        self._editor_load_id     = None  # a fetch still on its way is not wanted now
         self._loaded_fields      = {}
         self._loaded_full_size   = True
         self._exif_data          = {}
